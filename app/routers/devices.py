@@ -51,7 +51,7 @@ async def device_list(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        # 租户过滤：非超管用户只看自己租户的设备（匹配 JeecgBoot applyTenantFilter）
+        # 租户过滤：非超管用户只看自己租户的设备
         tenant_id: int | None = None
         if current_user and current_user.get("username"):
             tenant_id = await device_service.get_user_tenant_id(db, current_user["username"])

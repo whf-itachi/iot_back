@@ -1,4 +1,4 @@
-"""IoT 数据路由 — JetLinks 代理和聚合（替代 jetlinks_proxy.py）"""
+"""IoT 数据路由 — JetLinks 设备数据代理与聚合"""
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db

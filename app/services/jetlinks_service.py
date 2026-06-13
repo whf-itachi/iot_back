@@ -1,4 +1,4 @@
-"""JetLinks API 客户端 — 替代 jetlinks_proxy.py"""
+"""JetLinks API 客户端 — 对接 JetLinks IoT 平台"""
 import httpx
 from ..config import settings
 

@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="IoT 叶片加工监控平台",
-    description="FastAPI 后端 — 替代 JeecgBoot + jetlinks_proxy.py",
+    description="FastAPI 后端 — IoT 叶片加工监控平台",
     version="2.0.0",
     lifespan=lifespan,
 )
