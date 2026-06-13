@@ -106,6 +106,26 @@ async def process_log_query(
         return {"success": False, "message": str(e), "results": [], "total": 0}
 
 
+@router.get("/iot/flatness/blades")
+async def flatness_blades(
+    deviceName: str = Query("", alias="deviceName"),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询某设备下的所有叶片，返回每片叶子的加工前/后平面度数据"""
+    try:
+        blades = await webhook_service.query_blade_list(
+            db, device_name=deviceName or None
+        )
+        return {
+            "success": True,
+            "message": f"找到 {len(blades)} 片叶片",
+            "results": blades,
+            "total": len(blades),
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e), "results": [], "total": 0}
+
+
 @router.get("/iot/flatness/query")
 @router.get("/agg/flatness/query")
 async def flatness_query(
