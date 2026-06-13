@@ -17,7 +17,7 @@ async def save_event(
     """根据事件类型保存到对应的表中，同时记录推送日志"""
 
     # 记录推送日志（所有类型都记）
-    _save_webhook_log(db, device_id, device_name, event_type, timestamp, raw_body)
+    save_webhook_log(db, device_id, device_name, event_type, timestamp, raw_body)
 
     if event_type == "process_log_report":
         return await _save_process_log(db, device_id, device_name, timestamp, data)
@@ -28,7 +28,7 @@ async def save_event(
         return None
 
 
-def _save_webhook_log(db: AsyncSession, device_id: str, device_name: str, event_type: str, timestamp: int, raw_body: str):
+def save_webhook_log(db: AsyncSession, device_id: str, device_name: str, event_type: str, timestamp: int, raw_body: str):
     log = IotWebhookLog(
         device_id=device_id,
         device_name=device_name or "",
