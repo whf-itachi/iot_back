@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     jetlinks_password: str = "WHF123whf"
     jetlinks_product_id: str = "2061662500706525184"
 
+    # Webhook
+    webhook_token: str = ""
+
     # 服务
     host: str = "0.0.0.0"
     port: int = 8080

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import engine, Base
-from .routers import auth_router, users_router, tenants_router, devices_router, iot_router
+from .routers import auth_router, users_router, tenants_router, devices_router, iot_router, webhook_router
 
 
 @asynccontextmanager
@@ -53,6 +53,7 @@ app.include_router(users_router)
 app.include_router(tenants_router)
 app.include_router(devices_router)
 app.include_router(iot_router)
+app.include_router(webhook_router)
 
 
 @app.get("/")

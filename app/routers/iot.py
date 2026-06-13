@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..schemas.response import Result
 from ..services.jetlinks_service import jetlinks
-from ..services import device_service
+from ..services import device_service, webhook_service
 
 router = APIRouter(tags=["IoT数据"])
 
@@ -77,6 +77,22 @@ async def process_log_query(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        # 优先查本地 Webhook 接收的日志
+        local_logs = await webhook_service.query_process_logs(
+            db, blade_id=bladeId or None
+        )
+        if local_logs:
+            if username:
+                local_logs = await _filter_by_user_devices(db, username, local_logs)
+            return {
+                "success": True,
+                "message": f"找到 {len(local_logs)} 条加工日志（本地）",
+                "results": local_logs,
+                "data": local_logs,
+                "total": len(local_logs),
+            }
+
+        # 兜底查询 JetLinks API
         data = await jetlinks.query_process_logs(bladeId)
         if data.get("success") and username:
             filtered = await _filter_by_user_devices(db, username, data.get("results", []))
@@ -98,6 +114,22 @@ async def flatness_query(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        # 优先查本地 Webhook 接收的平面度数据
+        local_logs = await webhook_service.query_flatness_data(
+            db, blade_id=bladeId or None
+        )
+        if local_logs:
+            if username:
+                local_logs = await _filter_by_user_devices(db, username, local_logs)
+            return {
+                "success": True,
+                "message": f"找到 {len(local_logs)} 条平面度数据（本地）",
+                "results": local_logs,
+                "data": local_logs,
+                "total": len(local_logs),
+            }
+
+        # 兜底查询 JetLinks API
         data = await jetlinks.query_flatness(bladeId or None)
         if data.get("success") and username:
             filtered = await _filter_by_user_devices(db, username, data.get("results", []))
