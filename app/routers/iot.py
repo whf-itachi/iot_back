@@ -69,6 +69,26 @@ async def feedrate():
         return {"error": str(e)}
 
 
+@router.get("/iot/process-log/blades")
+async def process_log_blades(
+    deviceName: str = Query("", alias="deviceName"),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询某设备下的所有叶片加工日志"""
+    try:
+        blades = await webhook_service.query_process_log_blades(
+            db, device_name=deviceName or None
+        )
+        return {
+            "success": True,
+            "message": f"找到 {len(blades)} 条加工日志",
+            "results": blades,
+            "total": len(blades),
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e), "results": [], "total": 0}
+
+
 @router.get("/iot/process-log/query")
 @router.get("/agg/process-log/query")
 async def process_log_query(

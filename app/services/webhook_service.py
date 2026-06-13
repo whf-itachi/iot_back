@@ -216,6 +216,39 @@ async def query_blade_list(
     return sorted(blade_map.values(), key=lambda x: x["blade_id"])[:limit]
 
 
+async def query_process_log_blades(
+    db: AsyncSession,
+    device_name: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """查询所有叶片的加工日志（按设备名过滤）"""
+    stmt = (
+        select(IotProcessLog)
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+    )
+    if device_name:
+        stmt = stmt.where(IotProcessLog.device_name == device_name)
+    stmt = stmt.limit(limit)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    blades = []
+    seen = set()
+    for r in rows:
+        bid = r.blade_id or f"unknown_{r.id}"
+        if bid in seen:
+            continue
+        seen.add(bid)
+        blades.append({
+            "blade_id": bid,
+            "device_name": r.device_name,
+            "operator": r.operator,
+            "mill_result": r.mill_result,
+            "log": _process_log_to_dict(r),
+        })
+    return blades
+
+
 def _flatness_to_dict(r: IotFlatnessData) -> dict:
     return {
         "_deviceId": r.device_id,
