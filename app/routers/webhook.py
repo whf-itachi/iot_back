@@ -23,82 +23,77 @@ async def verify_webhook_token(
     raise HTTPException(status_code=401, detail="Webhook Token 无效")
 
 
-@router.post("/webhook/event")
-async def receive_event(
+@router.post("/webhook/event/process_log")
+async def receive_process_log(
     request: Request,
     db: AsyncSession = Depends(get_db),
     _token: str = Depends(verify_webhook_token),
 ):
-    """接收 JetLinks Webhook 推送事件（宽松解析，适配 JetLinks 原生格式）"""
+    """接收叶片加工日志（JetLinks 推送 process_log_report）"""
 
     raw_body = await request.body()
     raw_text = raw_body.decode("utf-8") if raw_body else ""
+    logger.info(f"收到加工日志推送:\n{raw_text[:2000]}")
 
-    # 记录原始数据，方便调试 JetLinks 推送格式
-    logger.info(f"收到 Webhook 推送:\n{raw_text[:2000]}")
-
-    # 解析原始 JSON
-    try:
-        body = json.loads(raw_text) if raw_text else {}
-    except json.JSONDecodeError:
-        # 纯文本体也记日志
-        webhook_service.save_webhook_log(db, "", "", "unknown", 0, raw_text)
+    body = _parse_body(raw_text)
+    if body is None:
+        webhook_service.save_webhook_log(db, "", "", "process_log_report", 0, raw_text)
         await db.commit()
         return Result.ok(None, "已记录原始数据到推送日志")
 
-    if not isinstance(body, dict):
-        webhook_service.save_webhook_log(db, "", "", "unknown", 0, raw_text)
-        await db.commit()
-        return Result.ok(None, "已记录原始数据到推送日志")
-
-    # 从 body 中提取关键字段（兼容 JetLinks 多种命名风格）
-    device_id = (
-        body.get("deviceId")
-        or body.get("device_id")
-        or body.get("deviceID")
-        or ""
-    )
-    device_name = (
-        body.get("deviceName")
-        or body.get("device_name")
-        or ""
-    )
-    event_type = (
-        body.get("event")
-        or body.get("eventType")
-        or body.get("event_type")
-        or ""
-    )
-    timestamp = (
-        body.get("timestamp")
-        or body.get("eventTime")
-        or body.get("event_time")
-        or 0
-    )
-    # 事件数据可能在 data / payload / properties 字段中
-    event_data = (
-        body.get("data")
-        or body.get("payload")
-        or body.get("properties")
-        or body
-    )
-    if isinstance(event_data, dict):
-        event_data = {**event_data}  # 浅拷贝
+    device_id = str(body.get("deviceId") or body.get("sourceId") or "")
+    device_name = str(body.get("deviceName") or body.get("sourceName") or "")
+    timestamp = int(body.get("timestamp") or 0)
+    event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
 
     try:
-        result = await webhook_service.save_event(
-            db=db,
-            device_id=str(device_id),
-            device_name=str(device_name),
-            event_type=str(event_type),
-            timestamp=int(timestamp) if timestamp else 0,
-            data=event_data if isinstance(event_data, dict) else {},
-            raw_body=raw_text,
+        event = await webhook_service.save_event(
+            db=db, device_id=device_id, device_name=device_name,
+            event_type="process_log_report", timestamp=timestamp,
+            data=event_data, raw_body=raw_text,
         )
-        if result is None:
-            return Result.ok(None, f"事件已记录到推送日志（event={event_type or '未识别'}）")
-        return Result.ok({"id": result.id}, f"事件 {event_type} 已接收")
-    except ValueError as e:
-        return Result.error(str(e))
+        return Result.ok({"id": event.id}, "加工日志已接收")
     except Exception as e:
         return Result.error(str(e))
+
+
+@router.post("/webhook/event/flatness_data")
+async def receive_flatness_data(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _token: str = Depends(verify_webhook_token),
+):
+    """接收平面度测量数据（JetLinks 推送 flatness_data）"""
+
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8") if raw_body else ""
+    logger.info(f"收到平面度推送:\n{raw_text[:2000]}")
+
+    body = _parse_body(raw_text)
+    if body is None:
+        webhook_service.save_webhook_log(db, "", "", "flatness_data", 0, raw_text)
+        await db.commit()
+        return Result.ok(None, "已记录原始数据到推送日志")
+
+    device_id = str(body.get("deviceId") or body.get("sourceId") or "")
+    device_name = str(body.get("deviceName") or body.get("sourceName") or "")
+    timestamp = int(body.get("timestamp") or 0)
+    event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
+
+    try:
+        event = await webhook_service.save_event(
+            db=db, device_id=device_id, device_name=device_name,
+            event_type="flatness_data", timestamp=timestamp,
+            data=event_data, raw_body=raw_text,
+        )
+        return Result.ok({"id": event.id}, "平面度数据已接收")
+    except Exception as e:
+        return Result.error(str(e))
+
+
+def _parse_body(raw_text: str) -> dict | None:
+    try:
+        body = json.loads(raw_text)
+        return body if isinstance(body, dict) else None
+    except json.JSONDecodeError:
+        return None
