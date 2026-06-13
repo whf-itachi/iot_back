@@ -81,5 +81,6 @@ class IotFlatnessData(Base):
     rms: Mapped[float | None] = mapped_column(Float, comment="平面度值")
     hole_angle: Mapped[list | None] = mapped_column(JSON, comment="孔角度")
     hole_value: Mapped[list | None] = mapped_column(JSON, comment="孔测量值")
+    process_stage: Mapped[str | None] = mapped_column(String(50), comment="加工阶段(before/after)")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="入库时间")

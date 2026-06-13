@@ -111,6 +111,7 @@ async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str
         rms=_float(data, "rms"),
         hole_angle=data.get("hole_angle"),
         hole_value=data.get("hole_value"),
+        process_stage=_str(data, "process_stage"),
     )
     db.add(rec)
     await db.commit()
@@ -199,4 +200,5 @@ def _flatness_to_dict(r: IotFlatnessData) -> dict:
         "rms": r.rms,
         "hole_angle": r.hole_angle,
         "hole_value": r.hole_value,
+        "process_stage": r.process_stage,
     }

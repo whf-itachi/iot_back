@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS `iot_flatness_data` (
     `rms` double DEFAULT NULL COMMENT '平面度值',
     `hole_angle` json DEFAULT NULL COMMENT '孔角度',
     `hole_value` json DEFAULT NULL COMMENT '孔测量值',
+    `process_stage` varchar(50) DEFAULT NULL COMMENT '加工阶段(before/after)',
     `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '入库时间',
     PRIMARY KEY (`id`),
     KEY `idx_device_id` (`device_id`),
