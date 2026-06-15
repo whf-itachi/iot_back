@@ -254,9 +254,28 @@ async def bind_user(db: AsyncSession, device_id: str, user_id: str) -> None:
 
 
 async def unbind_user(db: AsyncSession, device_id: str, user_id: str) -> None:
-    await db.execute(delete(IotDeviceUser).where(
-        IotDeviceUser.device_id == device_id, IotDeviceUser.user_id == user_id))
+    """解绑设备，并级联解绑所有下级用户"""
+    # 收集该用户及其所有下级用户ID
+    user_ids_to_unbind = {user_id}
+    await _collect_descendant_ids(db, user_id, user_ids_to_unbind)
+
+    # 级联解绑
+    for uid in user_ids_to_unbind:
+        await db.execute(delete(IotDeviceUser).where(
+            IotDeviceUser.device_id == device_id, IotDeviceUser.user_id == uid))
     await db.commit()
+
+
+async def _collect_descendant_ids(db: AsyncSession, user_id: str, result_set: set) -> None:
+    """递归收集所有下级用户ID"""
+    children = await db.execute(
+        select(SysUser.id).where(SysUser.parent_id == user_id)
+    )
+    for row in children.all():
+        child_id = row[0]
+        if child_id and child_id not in result_set:
+            result_set.add(child_id)
+            await _collect_descendant_ids(db, child_id, result_set)
 
 
 async def clean_user_bindings(db: AsyncSession, user_id: str) -> int:
