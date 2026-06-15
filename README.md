@@ -4,17 +4,17 @@
 
 ## 技术栈
 
-| 技术 | 版本 | 用途 |
-|------|------|------|
-| FastAPI | 0.115 | Web 框架 |
-| Uvicorn | 0.34 | ASGI 服务器 |
-| SQLAlchemy | 2.0 | ORM（异步模式） |
-| aiomysql | 0.2 | MySQL 异步驱动 |
-| Pydantic | 2.10 | 数据校验 & 配置管理 |
-| python-jose | 3.3 | JWT 令牌处理 |
-| passlib | 1.7 | 密码哈希 |
-| httpx | 0.28 | HTTP 客户端（对接 JetLinks） |
-| Alembic | 1.14 | 数据库迁移 |
+| 技术          | 版本    | 用途                    |
+| ----------- | ----- | --------------------- |
+| FastAPI     | 0.115 | Web 框架                |
+| Uvicorn     | 0.34  | ASGI 服务器              |
+| SQLAlchemy  | 2.0   | ORM（异步模式）             |
+| aiomysql    | 0.2   | MySQL 异步驱动            |
+| Pydantic    | 2.10  | 数据校验 & 配置管理           |
+| python-jose | 3.3   | JWT 令牌处理              |
+| passlib     | 1.7   | 密码哈希                  |
+| httpx       | 0.28  | HTTP 客户端（对接 JetLinks） |
+| Alembic     | 1.14  | 数据库迁移                 |
 
 ## 项目结构
 
@@ -110,21 +110,21 @@ python start.py
 
 服务启动后：
 
-| 地址 | 说明 |
-|------|------|
-| http://localhost:8080 | API 服务 |
-| http://localhost:8080/docs | Swagger API 文档 |
-| http://localhost:8080/redoc | ReDoc API 文档 |
+| 地址                          | 说明             |
+| --------------------------- | -------------- |
+| http://localhost:8080       | API 服务         |
+| http://localhost:8080/docs  | Swagger API 文档 |
+| http://localhost:8080/redoc | ReDoc API 文档   |
 
 ## API 概览
 
-| 模块 | 路径前缀 | 说明 |
-|------|----------|------|
-| 认证 | `/api/auth` | 登录、登出、Token 刷新 |
-| 用户管理 | `/api/users` | 用户 CRUD |
-| 租户管理 | `/api/tenants` | 租户 CRUD |
-| 设备管理 | `/api/devices` | 设备 CRUD、数据查询 |
-| IoT 数据 | `/api/iot` | JetLinks 数据代理 |
+| 模块     | 路径前缀           | 说明             |
+| ------ | -------------- | -------------- |
+| 认证     | `/api/auth`    | 登录、登出、Token 刷新 |
+| 用户管理   | `/api/users`   | 用户 CRUD        |
+| 租户管理   | `/api/tenants` | 租户 CRUD        |
+| 设备管理   | `/api/devices` | 设备 CRUD、数据查询   |
+| IoT 数据 | `/api/iot`     | JetLinks 数据代理  |
 
 ## 默认管理员
 
@@ -144,3 +144,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 4
 # 或使用 gunicorn
 gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8080
 ```
+
+  cd /usr/local/haitch/code/iot
+  chmod +x iot_back.sh
+  ./iot_back.sh start      # 一键启动
+  ./iot_back.sh stop       # 停止
+  ./iot_back.sh restart    # 重启
+  ./iot_back.sh status     # 查看状态
+  ./iot_back.sh logs       # 查看日志
