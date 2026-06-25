@@ -13,11 +13,13 @@ router = APIRouter(tags=["设备管理"])
 
 @router.post("/iot/admin/device/syncAll")
 async def sync_all(db: AsyncSession = Depends(get_db)):
+    import traceback, sys
     try:
         count = await device_service.sync_from_jetlinks(db)
         return Result.ok(f"同步完成：设备 {count} 台", "同步成功")
     except Exception as e:
-        return Result.error(str(e))
+        traceback.print_exc(file=sys.stderr)
+        return Result.error(f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}（无异常信息，请查看服务端控制台）")
 
 
 @router.post("/iot/admin/device/sync")
