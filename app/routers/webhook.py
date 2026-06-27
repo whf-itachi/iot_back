@@ -43,7 +43,12 @@ async def receive_process_log(
 
     device_id = str(body.get("deviceId") or body.get("sourceId") or "")
     device_name = str(body.get("deviceName") or body.get("sourceName") or "")
+    # timestamp 优先取顶层，没有则从 scene 中取
     timestamp = int(body.get("timestamp") or 0)
+    if not timestamp:
+        scene = body.get("scene")
+        if isinstance(scene, dict):
+            timestamp = int(scene.get("timestamp") or 0)
     event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
 
     try:
@@ -52,8 +57,10 @@ async def receive_process_log(
             event_type="process_log_report", timestamp=timestamp,
             data=event_data, raw_body=raw_text,
         )
+        logger.info(f"加工日志写入成功: id={event.id}, device={device_name}")
         return Result.ok({"id": event.id}, "加工日志已接收")
     except Exception as e:
+        logger.error(f"加工日志写入失败 device={device_name}: {e}", exc_info=True)
         return Result.error(str(e))
 
 
@@ -77,7 +84,12 @@ async def receive_flatness_data(
 
     device_id = str(body.get("deviceId") or body.get("sourceId") or "")
     device_name = str(body.get("deviceName") or body.get("sourceName") or "")
+    # timestamp 优先取顶层，没有则从 scene 中取
     timestamp = int(body.get("timestamp") or 0)
+    if not timestamp:
+        scene = body.get("scene")
+        if isinstance(scene, dict):
+            timestamp = int(scene.get("timestamp") or 0)
     event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
 
     try:
@@ -86,8 +98,10 @@ async def receive_flatness_data(
             event_type="flatness_data", timestamp=timestamp,
             data=event_data, raw_body=raw_text,
         )
+        logger.info(f"平面度数据写入成功: id={event.id}, blade_id={event_data.get('blade_id', '')}, device={device_name}")
         return Result.ok({"id": event.id}, "平面度数据已接收")
     except Exception as e:
+        logger.error(f"平面度数据写入失败 device={device_name}: {e}", exc_info=True)
         return Result.error(str(e))
 
 
