@@ -1,10 +1,11 @@
 """用户管理路由"""
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from ..database import get_db
 from ..schemas.response import Result
 from ..services import user_service
+from ..utils.security import get_current_user
 
 router = APIRouter(tags=["用户管理"])
 
@@ -20,6 +21,11 @@ class EditUserRequest(BaseModel):
     realname: str | None = None
     phone: str | None = None
     password: str | None = None
+
+
+class AdminResetPasswordRequest(BaseModel):
+    userId: str
+    newPassword: str
 
 
 @router.get("/sys/user/list")
@@ -65,5 +71,27 @@ async def delete_user(
     try:
         await user_service.delete_user(db, id)
         return Result.ok(None, "删除成功")
+    except ValueError as e:
+        return Result.error(str(e))
+
+
+@router.put("/sys/user/adminResetPassword")
+async def admin_reset_password(
+    req: AdminResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """超级管理员重置任意用户密码（无需旧密码）"""
+    try:
+        # 验证当前用户是否为 superadmin
+        from ..models.user import SysUser
+        from sqlalchemy import select
+        result = await db.execute(select(SysUser).where(SysUser.id == current_user.get("sub")))
+        admin = result.scalar_one_or_none()
+        if not admin or admin.role_type != "superadmin":
+            raise HTTPException(status_code=403, detail="仅超级管理员可执行此操作")
+
+        await user_service.reset_user_password(db, req.userId, req.newPassword)
+        return Result.ok(None, "密码重置成功")
     except ValueError as e:
         return Result.error(str(e))

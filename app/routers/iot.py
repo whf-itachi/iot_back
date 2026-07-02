@@ -183,6 +183,26 @@ async def flatness_query(
         return {"success": False, "message": str(e), "results": [], "total": 0}
 
 
+@router.get("/iot/statistics/flatness")
+async def flatness_statistics(
+    username: str = Query(None, alias="username"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取所有叶片的加工前后平面度对比统计"""
+    try:
+        data = await webhook_service.query_flatness_statistics(db)
+        if username:
+            data = await _filter_by_user_devices(db, username, data)
+        return {
+            "success": True,
+            "message": f"共 {len(data)} 条统计记录",
+            "results": data,
+            "total": len(data),
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e), "results": [], "total": 0}
+
+
 @router.get("/iot/device/list")
 async def device_list_jetlinks(
     page: int = Query(1, alias="page"),

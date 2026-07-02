@@ -43,6 +43,23 @@ async def sync_products():
 
 # ==================== 设备列表（字面路径，必须在 /{device_id} 之前） ====================
 
+@router.get("/iot/admin/device/withBladeData")
+async def device_with_blade_data(
+    dataType: str = Query("processLog", alias="dataType"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """获取有叶片加工/平面度数据的设备"""
+    try:
+        tenant_id: int | None = None
+        if current_user and current_user.get("username"):
+            tenant_id = await device_service.get_user_tenant_id(db, current_user["username"])
+        data = await device_service.get_devices_with_blade_data(db, dataType, tenant_id)
+        return Result.ok(data, "查询成功")
+    except Exception as e:
+        return Result.error(str(e))
+
+
 @router.get("/iot/admin/device/list")
 async def device_list(
     pageNo: int = Query(1, alias="pageNo"),

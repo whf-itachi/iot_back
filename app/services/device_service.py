@@ -1,10 +1,11 @@
 """设备管理服务 — 重构版：sys_user 合并了 extension + tenant"""
 import uuid
 import datetime
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.device import IotDevice
 from ..models.device_user import IotDeviceUser
+from ..models.iot_event import IotProcessLog, IotFlatnessData
 from ..models.user import SysUser
 from ..services.jetlinks_service import jetlinks
 
@@ -387,3 +388,46 @@ async def delete_extension(db: AsyncSession, user_id: str) -> None:
         user.role_type = "employee"
         user.parent_id = None
         await db.commit()
+
+
+# ==================== 叶片数据设备过滤 ====================
+
+async def get_devices_with_blade_data(
+    db: AsyncSession,
+    data_type: str = "processLog",
+    tenant_id: int | None = None,
+) -> list[dict]:
+    """获取有叶片加工/平面度数据的设备列表
+
+    Args:
+        data_type: "processLog" 查询 iot_process_log, "flatness" 查询 iot_flatness_data
+        tenant_id: 非 None 且非 0 时按租户过滤
+    """
+    model = IotProcessLog if data_type == "processLog" else IotFlatnessData
+
+    # 查询有数据的 device_id（去重）
+    stmt = select(distinct(model.device_id)).where(model.device_id.isnot(None))
+    result = await db.execute(stmt)
+    valid_ids = {row[0] for row in result.all()}
+    if not valid_ids:
+        return []
+
+    # 查询对应设备
+    device_stmt = select(IotDevice).where(IotDevice.id.in_(valid_ids))
+    if tenant_id is not None and tenant_id != 0:
+        device_stmt = device_stmt.where(IotDevice.tenant_id == tenant_id)
+    device_stmt = device_stmt.order_by(IotDevice.name)
+    result = await db.execute(device_stmt)
+    devices = result.scalars().all()
+
+    return [
+        {
+            "id": d.id, "name": d.name, "description": d.description,
+            "productId": d.product_id, "productName": d.product_name,
+            "stateText": d.state_text, "stateValue": d.state_value,
+            "deviceTypeText": d.device_type_text, "deviceTypeValue": d.device_type_value,
+            "photoUrl": d.photo_url, "registryTime": d.registry_time,
+            "createTimeJetlinks": d.create_time_jetlinks, "tenantId": d.tenant_id,
+        }
+        for d in devices
+    ]

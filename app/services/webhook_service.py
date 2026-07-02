@@ -343,3 +343,59 @@ def _flatness_to_dict(r: IotFlatnessData) -> dict:
         "hole_value": r.hole_value,
         "process_stage": r.process_stage,
     }
+
+
+async def query_flatness_statistics(
+    db: AsyncSession,
+    device_name: str | None = None,
+) -> list[dict]:
+    """查询所有叶片的加工前后平面度对比统计
+
+    从 iot_process_log 中提取每片叶子的 before_flatness / after_flatness，
+    计算变化量，按 blade_id 去重取最新一条。
+    """
+    from sqlalchemy import desc
+
+    stmt = (
+        select(IotProcessLog)
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+    )
+    if device_name:
+        stmt = stmt.where(IotProcessLog.device_name == device_name)
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    # 按 blade_id 去重，每片叶子只取最新的记录
+    seen = {}
+    for r in rows:
+        bid = r.blade_id or f"unknown_{r.id}"
+        if bid not in seen:
+            seen[bid] = r
+
+    stats = []
+    for bid, r in seen.items():
+        before_val = r.before_flatness
+        after_val = r.after_flatness
+        # 计算改善量：正值表示平面度变好
+        improvement = None
+        if before_val is not None and after_val is not None:
+            improvement = round(before_val - after_val, 4)
+
+        stats.append({
+            "blade_id": bid,
+            "device_name": r.device_name,
+            "_deviceId": r.device_id,
+            "before_flatness": before_val,
+            "after_flatness": after_val,
+            "improvement": improvement,
+            "mill_result": r.mill_result,
+            "operator": r.operator,
+            "process_start_time": r.process_start_time,
+            "event_time": r.event_time,
+            "mill_depth": r.mill_depth,
+            "total_duration": r.total_duration,
+        })
+
+    # 按 blade_id 排序
+    return sorted(stats, key=lambda x: x["blade_id"])

@@ -70,6 +70,16 @@ async def delete_user(db: AsyncSession, user_id: str) -> None:
     await db.commit()
 
 
+async def reset_user_password(db: AsyncSession, user_id: str, new_password: str) -> None:
+    """管理员重置任意用户密码（无需旧密码）"""
+    result = await db.execute(select(SysUser).where(SysUser.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise ValueError("用户不存在")
+    user.password = hash_password(new_password)
+    await db.commit()
+
+
 async def find_user_id_by_username(db: AsyncSession, username: str) -> str | None:
     result = await db.execute(select(SysUser.id).where(SysUser.username == username))
     row = result.first()
