@@ -31,7 +31,7 @@ async def get_user_list(db: AsyncSession, page_no: int = 1, page_size: int = 200
 async def add_user(db: AsyncSession, data: dict) -> dict:
     result = await db.execute(select(SysUser).where(SysUser.username == data["username"]))
     if result.scalar_one_or_none():
-        raise ValueError(f"用户名 {data['username']} 已存在")
+        raise ValueError(f"账号名 {data['username']} 已存在")
 
     uid = str(uuid.uuid4()).replace("-", "")[:32]
     user = SysUser(

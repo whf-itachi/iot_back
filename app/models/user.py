@@ -9,7 +9,7 @@ class SysUser(Base):
     __tablename__ = "sys_user"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, comment="用户ID")
-    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, comment="用户名")
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, comment="账号名")
     password: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码(bcrypt)")
     realname: Mapped[str | None] = mapped_column(String(100), comment="姓名")
     status: Mapped[int] = mapped_column(Integer, default=1, comment="状态 1=正常 0=禁用")

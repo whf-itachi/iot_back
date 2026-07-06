@@ -11,7 +11,7 @@ USE `iot`;
 DROP TABLE IF EXISTS `sys_user`;
 CREATE TABLE `sys_user` (
     `id` varchar(64) NOT NULL COMMENT '用户ID',
-    `username` varchar(100) NOT NULL COMMENT '用户名',
+    `username` varchar(100) NOT NULL COMMENT '账号名',
     `password` varchar(255) NOT NULL COMMENT '密码(bcrypt)',
     `realname` varchar(100) DEFAULT NULL COMMENT '姓名',
     `status` int(11) DEFAULT 1 COMMENT '状态 1=正常 0=禁用',

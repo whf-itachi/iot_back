@@ -30,7 +30,7 @@ async def main():
 
         await db.commit()
 
-    print(f"\n初始化完成！用户名: {ADMIN_USERNAME}  密码: {ADMIN_PASSWORD}")
+    print(f"\n初始化完成！账号名: {ADMIN_USERNAME}  密码: {ADMIN_PASSWORD}")
 
 
 if __name__ == "__main__":
