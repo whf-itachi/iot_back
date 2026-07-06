@@ -14,7 +14,6 @@ CREATE TABLE `sys_user` (
     `username` varchar(100) NOT NULL COMMENT '用户名',
     `password` varchar(255) NOT NULL COMMENT '密码(bcrypt)',
     `realname` varchar(100) DEFAULT NULL COMMENT '姓名',
-    `phone` varchar(20) DEFAULT NULL COMMENT '手机号',
     `status` int(11) DEFAULT 1 COMMENT '状态 1=正常 0=禁用',
     `role_type` varchar(20) NOT NULL DEFAULT 'employee' COMMENT '角色: superadmin/admin/employee',
     `parent_id` varchar(64) DEFAULT NULL COMMENT '上级用户ID',

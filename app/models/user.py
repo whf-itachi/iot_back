@@ -12,7 +12,6 @@ class SysUser(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, comment="用户名")
     password: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码(bcrypt)")
     realname: Mapped[str | None] = mapped_column(String(100), comment="姓名")
-    phone: Mapped[str | None] = mapped_column(String(20), comment="手机号")
     status: Mapped[int] = mapped_column(Integer, default=1, comment="状态 1=正常 0=禁用")
     role_type: Mapped[str] = mapped_column(String(20), default="employee", comment="角色: superadmin/admin/employee")
     parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="上级用户ID")

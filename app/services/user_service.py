@@ -18,7 +18,7 @@ async def get_user_list(db: AsyncSession, page_no: int = 1, page_size: int = 200
         "records": [
             {
                 "id": u.id, "username": u.username, "realname": u.realname,
-                "phone": u.phone, "status": u.status,
+                "status": u.status,
                 "relTenantIds": str(u.tenant_id) if u.tenant_id else None,
                 "createTime": u.create_time.isoformat() if u.create_time else None,
             }
@@ -39,7 +39,6 @@ async def add_user(db: AsyncSession, data: dict) -> dict:
         username=data["username"],
         password=hash_password(data.get("password", "123456")),
         realname=data.get("realname", ""),
-        phone=data.get("phone", ""),
         status=1,
     )
     db.add(user)
@@ -54,8 +53,6 @@ async def edit_user(db: AsyncSession, user_id: str, data: dict) -> None:
         raise ValueError("用户不存在")
     if "realname" in data:
         user.realname = data["realname"]
-    if "phone" in data:
-        user.phone = data["phone"]
     if "password" in data and data["password"]:
         user.password = hash_password(data["password"])
     await db.commit()

@@ -14,12 +14,9 @@ class AddUserRequest(BaseModel):
     username: str
     password: str = "123456"
     realname: str = ""
-    phone: str = ""
-
 
 class EditUserRequest(BaseModel):
     realname: str | None = None
-    phone: str | None = None
     password: str | None = None
 
 

@@ -20,7 +20,7 @@ async def login(db: AsyncSession, username: str, password: str) -> dict:
         "token": token,
         "userInfo": {
             "id": user.id, "username": user.username,
-            "realname": user.realname, "phone": user.phone,
+            "realname": user.realname,
         },
     }
 
