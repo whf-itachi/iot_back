@@ -280,18 +280,23 @@ async def query_blade_list(
     result = await db.execute(stmt)
     rows = result.scalars().all()
 
-    # 按 blade_id 分组，提取 before/after
+    # 按 blade_id 分组，提取 before/after；rows 已按时间倒序，首次出现即最新
     blade_map: dict[str, dict] = {}
     for r in rows:
         bid = r.blade_id or f"unknown_{r.id}"
         if bid not in blade_map:
-            blade_map[bid] = {"blade_id": bid, "device_name": r.device_name, "_deviceId": r.device_id}
+            blade_map[bid] = {
+                "blade_id": bid,
+                "device_name": r.device_name,
+                "_deviceId": r.device_id,
+                "_sort_time": r.event_time or 0,
+            }
         stage = r.process_stage or "before"
         if stage not in blade_map[bid]:
             blade_map[bid][stage] = _flatness_to_dict(r)
 
-    # 按 blade_id 排序
-    return sorted(blade_map.values(), key=lambda x: x["blade_id"])[:limit]
+    # 按时间倒序，最新数据在最上面
+    return sorted(blade_map.values(), key=lambda x: x.get("_sort_time", 0) or 0, reverse=True)[:limit]
 
 
 async def query_process_log_blades(
@@ -398,5 +403,5 @@ async def query_flatness_statistics(
             "total_duration": r.total_duration,
         })
 
-    # 按 blade_id 排序
-    return sorted(stats, key=lambda x: x["blade_id"])
+    # 按时间倒序，最新数据在最上面
+    return sorted(stats, key=lambda x: x.get("event_time") or 0, reverse=True)
