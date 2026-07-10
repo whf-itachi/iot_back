@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from ..database import get_db
 from ..schemas.response import Result
 from ..services import tenant_service
+from ..utils.security import require_auth, require_admin
 
 router = APIRouter(tags=["租户管理"])
 
@@ -23,6 +24,7 @@ async def list_tenants(
     pageNo: int = Query(1, alias="pageNo"),
     pageSize: int = Query(200, alias="pageSize"),
     db: AsyncSession = Depends(get_db),
+    _auth: dict = Depends(require_auth),
 ):
     try:
         data = await tenant_service.get_tenant_list(db, pageNo, pageSize)
@@ -32,7 +34,11 @@ async def list_tenants(
 
 
 @router.post("/sys/tenant/add")
-async def add_tenant(req: AddTenantRequest, db: AsyncSession = Depends(get_db)):
+async def add_tenant(
+    req: AddTenantRequest,
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         data = await tenant_service.add_tenant(db, req.model_dump())
         return Result.ok(data, "新增成功")
@@ -45,6 +51,7 @@ async def edit_tenant(
     req: EditTenantRequest,
     id: int = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
 ):
     try:
         await tenant_service.edit_tenant(db, id, req.model_dump())
@@ -57,6 +64,7 @@ async def edit_tenant(
 async def delete_tenant(
     id: int = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
 ):
     try:
         await tenant_service.delete_tenant(db, id)

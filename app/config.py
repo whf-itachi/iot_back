@@ -18,10 +18,14 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_name: str = ""
 
-    # JWT
+    # JWT — Access Token + Refresh Token 双 Token 模式
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
-    jwt_expire_hours: int = 24
+    access_token_expire_minutes: int = 15   # Access Token 短期有效
+    refresh_token_expire_days: int = 7      # Refresh Token 长期有效
+
+    # 密码策略
+    password_expire_days: int = 0  # 密码过期天数，0 表示永不过期 否测需要定期修改密码
 
     # JetLinks
     jetlinks_base_url: str = ""

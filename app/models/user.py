@@ -16,6 +16,9 @@ class SysUser(Base):
     role_type: Mapped[str] = mapped_column(String(20), default="employee", comment="角色: superadmin/admin/employee")
     parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="上级用户ID")
     tenant_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="所属租户ID")
+    pwd_update_time: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="密码最后修改时间"
+    )
     create_time: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), comment="创建时间"
     )

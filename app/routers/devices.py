@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..schemas.response import Result
-from ..utils.security import get_current_user
+from ..utils.security import require_auth, require_admin
 from ..services import device_service
 
 router = APIRouter(tags=["设备管理"])
@@ -12,7 +12,10 @@ router = APIRouter(tags=["设备管理"])
 # ==================== 同步 ====================
 
 @router.post("/iot/admin/device/syncAll")
-async def sync_all(db: AsyncSession = Depends(get_db)):
+async def sync_all(
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     import traceback, sys
     try:
         count = await device_service.sync_from_jetlinks(db)
@@ -23,7 +26,10 @@ async def sync_all(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/iot/admin/device/sync")
-async def sync_devices(db: AsyncSession = Depends(get_db)):
+async def sync_devices(
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         count = await device_service.sync_from_jetlinks(db)
         return Result.ok(f"成功同步 {count} 台设备")
@@ -32,7 +38,9 @@ async def sync_devices(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/iot/admin/device/syncProducts")
-async def sync_products():
+async def sync_products(
+    _admin: dict = Depends(require_admin),
+):
     from ..services.jetlinks_service import jetlinks
     try:
         products = await jetlinks.sync_products()
@@ -47,7 +55,7 @@ async def sync_products():
 async def device_with_blade_data(
     dataType: str = Query("processLog", alias="dataType"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_auth),
 ):
     """获取有叶片加工/平面度数据的设备"""
     try:
@@ -67,7 +75,7 @@ async def device_list(
     stateValue: str | None = Query(None, alias="stateValue"),
     name: str | None = Query(None, alias="name"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_auth),
 ):
     try:
         # 租户过滤：非超管用户只看自己租户的设备
@@ -90,9 +98,9 @@ async def my_device_ids(
     username: str = Query(None, alias="username"),
     targetUsername: str = Query(None, alias="targetUsername"),
     db: AsyncSession = Depends(get_db),
+    _auth: dict = Depends(require_auth),
 ):
     try:
-        print('........................ get here')
         ids = await device_service.get_my_device_ids(db, username or "", targetUsername)
         return Result.ok(list(ids))
     except Exception as e:
@@ -100,7 +108,11 @@ async def my_device_ids(
 
 
 @router.get("/iot/admin/device/userDeviceIds/{user_id}")
-async def user_device_ids(user_id: str, db: AsyncSession = Depends(get_db)):
+async def user_device_ids(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         ids = await device_service.get_user_device_ids(db, user_id)
         return Result.ok(ids)
@@ -109,7 +121,10 @@ async def user_device_ids(user_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/iot/admin/device/allBindings")
-async def all_bindings(db: AsyncSession = Depends(get_db)):
+async def all_bindings(
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         data = await device_service.get_all_bindings(db)
         return Result.ok(data)
@@ -118,7 +133,11 @@ async def all_bindings(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/iot/admin/device/bindUser")
-async def bind_user(body: dict = Body(...), db: AsyncSession = Depends(get_db)):
+async def bind_user(
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         await device_service.bind_user(db, body.get("deviceId"), body.get("userId"))
         return Result.ok(None, "绑定成功")
@@ -127,7 +146,11 @@ async def bind_user(body: dict = Body(...), db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/iot/admin/device/unbindUser")
-async def unbind_user(body: dict = Body(...), db: AsyncSession = Depends(get_db)):
+async def unbind_user(
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         await device_service.unbind_user(db, body.get("deviceId"), body.get("userId"))
         return Result.ok(None, "解绑成功")
@@ -136,7 +159,11 @@ async def unbind_user(body: dict = Body(...), db: AsyncSession = Depends(get_db)
 
 
 @router.post("/iot/admin/device/cleanUserBindings/{user_id}")
-async def clean_bindings(user_id: str, db: AsyncSession = Depends(get_db)):
+async def clean_bindings(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         n = await device_service.clean_user_bindings(db, user_id)
         return Result.ok(f"已清理 {n} 条绑定")
@@ -147,7 +174,11 @@ async def clean_bindings(user_id: str, db: AsyncSession = Depends(get_db)):
 # ==================== 用户-租户 ====================
 
 @router.post("/iot/admin/device/user/assignTenant")
-async def assign_user_tenant(body: dict = Body(...), db: AsyncSession = Depends(get_db)):
+async def assign_user_tenant(
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         await device_service.assign_user_tenant(
             db, body.get("username"), body.get("tenantId")
@@ -160,7 +191,10 @@ async def assign_user_tenant(body: dict = Body(...), db: AsyncSession = Depends(
 # ==================== 用户扩展（角色+层级） ====================
 
 @router.get("/iot/admin/device/user/extension/all")
-async def all_extensions(db: AsyncSession = Depends(get_db)):
+async def all_extensions(
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         data = await device_service.get_all_extensions(db)
         return Result.ok(data)
@@ -169,7 +203,12 @@ async def all_extensions(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/iot/admin/device/user/extension/{user_id}")
-async def get_extension(user_id: str, db: AsyncSession = Depends(get_db)):
+async def get_extension(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _auth: dict = Depends(require_auth),
+):
+    """查询用户扩展信息（登录后加载角色时调用）"""
     try:
         data = await device_service.get_extension(db, user_id)
         return Result.ok(data)
@@ -178,7 +217,11 @@ async def get_extension(user_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/iot/admin/device/user/extension")
-async def save_extension(body: dict = Body(...), db: AsyncSession = Depends(get_db)):
+async def save_extension(
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         await device_service.save_extension(db, body)
         return Result.ok("ok")
@@ -187,7 +230,11 @@ async def save_extension(body: dict = Body(...), db: AsyncSession = Depends(get_
 
 
 @router.post("/iot/admin/device/user/extension/delete/{user_id}")
-async def delete_extension(user_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_extension(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         await device_service.delete_extension(db, user_id)
         return Result.ok("ok")
@@ -198,7 +245,11 @@ async def delete_extension(user_id: str, db: AsyncSession = Depends(get_db)):
 # ==================== 单个设备操作（参数化路径，必须在所有字面路径之后） ====================
 
 @router.get("/iot/admin/device/{device_id}")
-async def device_detail(device_id: str, db: AsyncSession = Depends(get_db)):
+async def device_detail(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+    _auth: dict = Depends(require_auth),
+):
     try:
         data = await device_service.get_device_by_id(db, device_id)
         if data:
@@ -213,6 +264,7 @@ async def assign_to_tenant(
     device_id: str,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
 ):
     try:
         ok = await device_service.assign_to_tenant(db, device_id, body.get("tenantId"))

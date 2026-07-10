@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from ..database import get_db
 from ..schemas.response import Result
 from ..services import user_service
-from ..utils.security import get_current_user
+from ..utils.security import require_auth, require_admin
 
 router = APIRouter(tags=["用户管理"])
 
@@ -30,6 +30,7 @@ async def list_users(
     pageNo: int = Query(1, alias="pageNo"),
     pageSize: int = Query(200, alias="pageSize"),
     db: AsyncSession = Depends(get_db),
+    _auth: dict = Depends(require_auth),
 ):
     try:
         data = await user_service.get_user_list(db, pageNo, pageSize)
@@ -39,7 +40,11 @@ async def list_users(
 
 
 @router.post("/sys/user/add")
-async def add_user(req: AddUserRequest, db: AsyncSession = Depends(get_db)):
+async def add_user(
+    req: AddUserRequest,
+    db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     try:
         data = await user_service.add_user(db, req.model_dump())
         return Result.ok(data, "新增成功")
@@ -52,6 +57,7 @@ async def edit_user(
     req: EditUserRequest,
     id: str = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
 ):
     try:
         await user_service.edit_user(db, id, req.model_dump(exclude_none=True))
@@ -64,6 +70,7 @@ async def edit_user(
 async def delete_user(
     id: str = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
+    _admin: dict = Depends(require_admin),
 ):
     try:
         await user_service.delete_user(db, id)
@@ -76,18 +83,10 @@ async def delete_user(
 async def admin_reset_password(
     req: AdminResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    _admin: dict = Depends(require_admin),
 ):
-    """超级管理员重置任意用户密码（无需旧密码）"""
+    """管理员重置任意用户密码（无需旧密码）"""
     try:
-        # 验证当前用户是否为 superadmin
-        from ..models.user import SysUser
-        from sqlalchemy import select
-        result = await db.execute(select(SysUser).where(SysUser.id == current_user.get("sub")))
-        admin = result.scalar_one_or_none()
-        if not admin or admin.role_type != "superadmin":
-            raise HTTPException(status_code=403, detail="仅超级管理员可执行此操作")
-
         await user_service.reset_user_password(db, req.userId, req.newPassword)
         return Result.ok(None, "密码重置成功")
     except ValueError as e:

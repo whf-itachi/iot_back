@@ -18,6 +18,7 @@ CREATE TABLE `sys_user` (
     `role_type` varchar(20) NOT NULL DEFAULT 'employee' COMMENT '角色: superadmin/admin/employee',
     `parent_id` varchar(64) DEFAULT NULL COMMENT '上级用户ID',
     `tenant_id` int(11) DEFAULT NULL COMMENT '所属租户ID',
+    `pwd_update_time` datetime DEFAULT NULL COMMENT '密码最后修改时间',
     `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_username` (`username`),

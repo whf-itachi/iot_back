@@ -1,5 +1,6 @@
 """用户管理服务 — 重构版"""
 import uuid
+import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.user import SysUser
@@ -21,6 +22,7 @@ async def get_user_list(db: AsyncSession, page_no: int = 1, page_size: int = 200
                 "status": u.status,
                 "relTenantIds": str(u.tenant_id) if u.tenant_id else None,
                 "createTime": u.create_time.isoformat() if u.create_time else None,
+                "pwdUpdateTime": u.pwd_update_time.isoformat() if u.pwd_update_time else None,
             }
             for u in records
         ],
@@ -34,12 +36,14 @@ async def add_user(db: AsyncSession, data: dict) -> dict:
         raise ValueError(f"账号名 {data['username']} 已存在")
 
     uid = str(uuid.uuid4()).replace("-", "")[:32]
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     user = SysUser(
         id=uid,
         username=data["username"],
         password=hash_password(data.get("password", "123456")),
         realname=data.get("realname", ""),
         status=1,
+        pwd_update_time=now,
     )
     db.add(user)
     await db.commit()
@@ -55,6 +59,7 @@ async def edit_user(db: AsyncSession, user_id: str, data: dict) -> None:
         user.realname = data["realname"]
     if "password" in data and data["password"]:
         user.password = hash_password(data["password"])
+        user.pwd_update_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     await db.commit()
 
 
@@ -74,6 +79,7 @@ async def reset_user_password(db: AsyncSession, user_id: str, new_password: str)
     if not user:
         raise ValueError("用户不存在")
     user.password = hash_password(new_password)
+    user.pwd_update_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     await db.commit()
 
 
