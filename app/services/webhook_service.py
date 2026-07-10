@@ -285,7 +285,7 @@ async def query_blade_list(
     for r in rows:
         bid = r.blade_id or f"unknown_{r.id}"
         if bid not in blade_map:
-            blade_map[bid] = {"blade_id": bid, "device_name": r.device_name}
+            blade_map[bid] = {"blade_id": bid, "device_name": r.device_name, "_deviceId": r.device_id}
         stage = r.process_stage or "before"
         if stage not in blade_map[bid]:
             blade_map[bid][stage] = _flatness_to_dict(r)
@@ -320,6 +320,7 @@ async def query_process_log_blades(
         blades.append({
             "blade_id": bid,
             "device_name": r.device_name,
+            "_deviceId": r.device_id,
             "operator": r.operator,
             "mill_result": r.mill_result,
             "log": _process_log_to_dict(r),
