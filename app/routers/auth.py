@@ -1,12 +1,13 @@
 """认证路由 — /api/sys/login, /api/sys/user/changePassword, /api/sys/token/refresh"""
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from ..database import get_db
 from ..schemas.response import Result
-from ..services import auth_service
+from ..services import auth_service, operation_log_service
 from ..utils.security import get_current_user, decode_token, create_access_token
+from ..utils.ip import get_client_ip
 from ..models.user import SysUser
 
 router = APIRouter(tags=["认证"])
@@ -72,6 +73,7 @@ async def refresh_access_token(
 @router.put("/sys/user/changePassword")
 async def change_password(
     req: ChangePwdRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -82,6 +84,12 @@ async def change_password(
         return Result.error("缺少用户名")
     try:
         await auth_service.change_password(db, username, req.password, req.newpassword)
+        # 记录操作日志
+        await operation_log_service.create_log(
+            db, account=username, operation_type="用户修改密码",
+            detail=f"用户 {username} 修改了密码",
+            ip_address=get_client_ip(request),
+        )
         return Result.ok(None, "密码修改成功")
     except ValueError as e:
         return Result.error(str(e))

@@ -60,11 +60,6 @@ iot_back/
 - MySQL 8.0+
 
 ### 1. 创建数据库
-
-```bash
-mysql -u root -p < init_db.sql
-```
-
 ### 2. 配置环境变量
 
 复制并编辑 `.env` 文件：
