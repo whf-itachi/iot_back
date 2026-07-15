@@ -7,7 +7,7 @@ from ..database import get_db
 from ..schemas.response import Result
 from ..services import user_service, operation_log_service
 from ..models.user import SysUser
-from ..utils.security import require_auth, require_admin
+from ..utils.security import require_auth, require_admin, check_in_my_chain
 from ..utils.ip import get_client_ip
 
 router = APIRouter(tags=["用户管理"])
@@ -21,11 +21,6 @@ class AddUserRequest(BaseModel):
 class EditUserRequest(BaseModel):
     realname: str | None = None
     password: str | None = None
-
-
-class AdminResetPasswordRequest(BaseModel):
-    userId: str
-    newPassword: str
 
 
 def _user_label(user) -> str:
@@ -74,10 +69,13 @@ async def edit_user(
     request: Request,
     id: str = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
+    """编辑用户：超管可编辑所有人；其他人只能编辑名下用户（非超管只能改密码）"""
+    await check_in_my_chain(db, current_user, id)
+
+
     try:
-        # 先查用户信息用于日志
         result = await db.execute(select(SysUser).where(SysUser.id == id))
         user = result.scalar_one_or_none()
         label = _user_label(user)
@@ -88,10 +86,13 @@ async def edit_user(
         if req.password is not None:
             changes.append("修改了密码")
 
+        if not changes:
+            return Result.ok(None, "无变更")
+
         await user_service.edit_user(db, id, req.model_dump(exclude_none=True))
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="编辑用户",
-            detail=f"编辑用户 {label}：" + ("，".join(changes) if changes else "无实际变更"),
+            db, account=current_user.get("username", ""), operation_type="编辑用户",
+            detail=f"编辑用户 {label}：" + "，".join(changes),
             ip_address=get_client_ip(request),
         )
         return Result.ok(None, "修改成功")
@@ -104,16 +105,16 @@ async def delete_user(
     request: Request,
     id: str = Query(..., alias="id"),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
-        # 先查用户信息（删之前拿到标识），再执行删除
+        await check_in_my_chain(db, current_user, id)
         result = await db.execute(select(SysUser).where(SysUser.id == id))
         user = result.scalar_one_or_none()
         label = _user_label(user)
         await user_service.delete_user(db, id)
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="删除用户",
+            db, account=current_user.get("username", ""), operation_type="删除用户",
             detail=f"删除用户 {label}",
             ip_address=get_client_ip(request),
         )
@@ -121,26 +122,3 @@ async def delete_user(
     except ValueError as e:
         return Result.error(str(e))
 
-
-@router.put("/sys/user/adminResetPassword")
-async def admin_reset_password(
-    req: AdminResetPasswordRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
-):
-    """管理员重置任意用户密码（无需旧密码）"""
-    try:
-        # 先查用户信息用于日志
-        result = await db.execute(select(SysUser).where(SysUser.id == req.userId))
-        user = result.scalar_one_or_none()
-        label = _user_label(user)
-        await user_service.reset_user_password(db, req.userId, req.newPassword)
-        await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="管理员重置密码",
-            detail=f"管理员 {_admin.get('username', '')} 重置了用户 {label} 的密码",
-            ip_address=get_client_ip(request),
-        )
-        return Result.ok(None, "密码重置成功")
-    except ValueError as e:
-        return Result.error(str(e))

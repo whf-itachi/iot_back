@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..database import get_db
 from ..schemas.response import Result
-from ..utils.security import require_auth, require_admin
+from ..utils.security import require_auth, require_admin, check_in_my_chain
 from ..utils.ip import get_client_ip
 from ..services import device_service, operation_log_service
 from ..models.user import SysUser
@@ -169,17 +169,17 @@ async def bind_user(
     request: Request,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
         device_id = body.get("deviceId")
         user_id = body.get("userId")
-        # 查名称用于日志
+        await check_in_my_chain(db, current_user, user_id)
         device_label = await _device_label(db, device_id)
         user_label = await _user_label(db, user_id)
         await device_service.bind_user(db, device_id, user_id)
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="设备绑定用户",
+            db, account=current_user.get("username", ""), operation_type="设备绑定用户",
             detail=f"设备 {device_label} 绑定用户 {user_label}",
             ip_address=get_client_ip(request),
         )
@@ -193,16 +193,17 @@ async def unbind_user(
     request: Request,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
         device_id = body.get("deviceId")
         user_id = body.get("userId")
+        await check_in_my_chain(db, current_user, user_id)
         device_label = await _device_label(db, device_id)
         user_label = await _user_label(db, user_id)
         await device_service.unbind_user(db, device_id, user_id)
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="设备解绑用户",
+            db, account=current_user.get("username", ""), operation_type="设备解绑用户",
             detail=f"设备 {device_label} 解绑用户 {user_label}",
             ip_address=get_client_ip(request),
         )
@@ -216,16 +217,18 @@ async def clean_bindings(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
-        user_label = await _user_label(db, user_id)
+        await check_in_my_chain(db, current_user, user_id)
         n = await device_service.clean_user_bindings(db, user_id)
-        await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="清理用户设备绑定",
-            detail=f"清理了用户 {user_label} 的 {n} 条设备绑定",
-            ip_address=get_client_ip(request),
-        )
+        if n > 0:
+            user_label = await _user_label(db, user_id)
+            await operation_log_service.create_log(
+                db, account=current_user.get("username", ""), operation_type="清理用户设备绑定",
+                detail=f"清理了用户 {user_label} 的 {n} 条设备绑定",
+                ip_address=get_client_ip(request),
+            )
         return Result.ok(f"已清理 {n} 条绑定")
     except Exception as e:
         return Result.error(str(e))
@@ -238,16 +241,29 @@ async def assign_user_tenant(
     request: Request,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
         username = body.get("username")
         tenant_id = body.get("tenantId")
+        # 查目标用户 ID 做权限检查
+        target_result = await db.execute(select(SysUser.id).where(SysUser.username == username))
+        target_row = target_result.first()
+        if target_row:
+            await check_in_my_chain(db, current_user, target_row[0])
+        # 检查是否真正发生变化
+        old_result = await db.execute(select(SysUser.tenant_id).where(SysUser.username == username))
+        old_row = old_result.first()
+        old_tid = old_row[0] if old_row else None
+        if old_tid == tenant_id:
+            return Result.ok(None, "租户未变化，无需更新")
+
         tenant_label = await _tenant_label(db, tenant_id)
+        old_label = await _tenant_label(db, old_tid)
         await device_service.assign_user_tenant(db, username, tenant_id)
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="用户分配租户",
-            detail=f"用户 {username} 分配至租户 {tenant_label}",
+            db, account=current_user.get("username", ""), operation_type="用户分配租户",
+            detail=f"用户 {username} 租户：{old_label} → {tenant_label}",
             ip_address=get_client_ip(request),
         )
         return Result.ok(None, "分配成功")
@@ -288,21 +304,35 @@ async def save_extension(
     request: Request,
     body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
         user_id = body.get("userId")
+        await check_in_my_chain(db, current_user, user_id)
         role_type = body.get("roleType", "employee")
         parent_id = body.get("parentId")
+
+        # 检查是否真正发生变化
+        old = await device_service.get_extension(db, user_id)
+        old_role = old.get("roleType") if old else None
+        old_parent = old.get("parent_id") if old else None
+        if old_role == role_type and old_parent == parent_id:
+            return Result.ok("未变化，无需更新")
+
         user_label = await _user_label(db, user_id)
         await device_service.save_extension(db, body)
-        detail_parts = [f"保存用户 {user_label} 扩展信息：角色={role_type}"]
-        if parent_id:
-            parent_label = await _user_label(db, parent_id)
-            detail_parts.append(f"上级={parent_label}")
+
+        changes = []
+        if old_role != role_type:
+            changes.append(f"角色：{old_role or '无'} → {role_type}")
+        if old_parent != parent_id:
+            old_parent_label = await _user_label(db, old_parent) if old_parent else "无"
+            new_parent_label = await _user_label(db, parent_id) if parent_id else "无"
+            changes.append(f"上级：{old_parent_label} → {new_parent_label}")
+
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="保存用户扩展信息",
-            detail="，".join(detail_parts),
+            db, account=current_user.get("username", ""), operation_type="保存用户扩展信息",
+            detail=f"用户 {user_label} " + "，".join(changes),
             ip_address=get_client_ip(request),
         )
         return Result.ok("ok")
@@ -315,13 +345,18 @@ async def delete_extension(
     user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _admin: dict = Depends(require_admin),
+    current_user: dict = Depends(require_auth),
 ):
     try:
+        await check_in_my_chain(db, current_user, user_id)
+        old = await device_service.get_extension(db, user_id)
+        if old and old.get("roleType") == "employee" and not old.get("parent_id"):
+            return Result.ok("已是默认状态，无需重置")
+
         user_label = await _user_label(db, user_id)
         await device_service.delete_extension(db, user_id)
         await operation_log_service.create_log(
-            db, account=_admin.get("username", ""), operation_type="删除用户扩展信息",
+            db, account=current_user.get("username", ""), operation_type="删除用户扩展信息",
             detail=f"重置了用户 {user_label} 的角色和层级",
             ip_address=get_client_ip(request),
         )
@@ -357,12 +392,19 @@ async def assign_to_tenant(
 ):
     try:
         tenant_id = body.get("tenantId")
+        # 检查是否真正发生变化
+        old = await device_service.get_device_by_id(db, device_id)
+        old_tid = old.get("tenantId") if old else None
+        if old_tid == tenant_id:
+            return Result.ok(None, "租户未变化，无需更新")
+
         device_label = await _device_label(db, device_id)
         ok = await device_service.assign_to_tenant(db, device_id, tenant_id)
         detail = f"设备 {device_label} "
         if tenant_id:
             tenant_label = await _tenant_label(db, tenant_id)
-            detail += f"分配至租户 {tenant_label}"
+            old_label = await _tenant_label(db, old_tid)
+            detail += f"租户：{old_label} → {tenant_label}"
         else:
             detail += "取消租户分配"
         await operation_log_service.create_log(

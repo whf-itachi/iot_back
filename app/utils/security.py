@@ -137,3 +137,27 @@ async def require_admin(
     if role not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
     return current_user
+
+
+async def check_in_my_chain(db: AsyncSession, operator: dict, target_user_id: str) -> None:
+    """权限检查：superadmin 可操作任何人；其他人只能操作自己名下（沿 parent_id 链向上查找）"""
+    from ..models.user import SysUser
+    role = operator.get("role", "")
+    if role == "superadmin":
+        return
+    operator_id = operator.get("sub", "")
+    if not operator_id:
+        raise HTTPException(status_code=403, detail="无法识别操作者身份")
+    if operator_id == target_user_id:
+        return
+    current_id = target_user_id
+    visited = set()
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        r = await db.execute(select(SysUser.parent_id).where(SysUser.id == current_id))
+        row = r.first()
+        parent = row[0] if row else None
+        if parent == operator_id:
+            return
+        current_id = parent
+    raise HTTPException(status_code=403, detail="该用户不在您名下，无权操作")
