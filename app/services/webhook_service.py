@@ -3,6 +3,7 @@ import asyncio
 import re
 from datetime import datetime
 from sqlalchemy import select, desc
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData
@@ -165,12 +166,11 @@ async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, 
     blade_id = _str(data, "blade_id")
     logger.info(f"[_save_process_log] 准备写入: blade_id={blade_id}, device={device_name}")
 
-    log = IotProcessLog(
+    values = dict(
+        blade_id=blade_id,
         device_id=device_id,
         device_name=device_name or "",
         event_time=timestamp,
-
-        blade_id=blade_id,
         operator=_str(data, "operator"),
         process_start_time=_int(data, "process_start_time"),
         process_end_time=_int(data, "process_end_time"),
@@ -199,38 +199,107 @@ async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, 
         lower_avg_power=_int(data, "lower_avg_power"),
         lower_max_power=_int(data, "lower_max_power"),
     )
-    logger.debug(f"[_save_process_log] 模型构造完成，准备 commit")
-    db.add(log)
+
+    stmt = mysql_insert(IotProcessLog).values(**values)
+    # (device_id, blade_id) 命中唯一约束时，更新其他字段
+    stmt = stmt.on_duplicate_key_update(
+        device_id=stmt.inserted.device_id,
+        device_name=stmt.inserted.device_name,
+        event_time=stmt.inserted.event_time,
+        operator=stmt.inserted.operator,
+        process_start_time=stmt.inserted.process_start_time,
+        process_end_time=stmt.inserted.process_end_time,
+        total_duration=stmt.inserted.total_duration,
+        factory=stmt.inserted.factory,
+        device_type_code=stmt.inserted.device_type_code,
+        scan_result=stmt.inserted.scan_result,
+        bolt_sleeve_max=stmt.inserted.bolt_sleeve_max,
+        bolt_sleeve_min=stmt.inserted.bolt_sleeve_min,
+        pitch_angle=stmt.inserted.pitch_angle,
+        yaw_angle=stmt.inserted.yaw_angle,
+        bcd_estimate=stmt.inserted.bcd_estimate,
+        before_flatness=stmt.inserted.before_flatness,
+        mill_depth=stmt.inserted.mill_depth,
+        mill_cycles=stmt.inserted.mill_cycles,
+        mill_result=stmt.inserted.mill_result,
+        after_flatness=stmt.inserted.after_flatness,
+        adjust_leg_time=stmt.inserted.adjust_leg_time,
+        laser_adjust_time=stmt.inserted.laser_adjust_time,
+        rough_scan_time=stmt.inserted.rough_scan_time,
+        fine_scan_time=stmt.inserted.fine_scan_time,
+        mill_time=stmt.inserted.mill_time,
+        scan_report_time=stmt.inserted.scan_report_time,
+        upper_avg_power=stmt.inserted.upper_avg_power,
+        upper_max_power=stmt.inserted.upper_max_power,
+        lower_avg_power=stmt.inserted.lower_avg_power,
+        lower_max_power=stmt.inserted.lower_max_power,
+    )
+
+    logger.debug(f"[_save_process_log] 执行 upsert")
+    await db.execute(stmt)
     await db.commit()
-    logger.info(f"[_save_process_log] 数据库写入成功: id={log.id}, blade_id={blade_id}")
+
+    # 查询回记录以获取 id
+    log = await db.scalar(
+        select(IotProcessLog).where(
+            IotProcessLog.device_id == device_id,
+            IotProcessLog.blade_id == blade_id,
+        )
+    )
+    logger.info(f"[_save_process_log] upsert 成功: id={log.id}, blade_id={blade_id}")
     await db.refresh(log)
     return log
 
 
 async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str, timestamp: int, data: dict):
     blade_id = _str(data, "blade_id")
+    process_stage = _str(data, "process_stage") or "before"
     measure_time = _int(data, "measure_time")
-    logger.info(f"[_save_flatness_data] 准备写入: blade_id={blade_id}, measure_time={measure_time}, device={device_name}")
+    logger.info(f"[_save_flatness_data] 准备写入: blade_id={blade_id}, stage={process_stage}, device={device_name}")
 
-    rec = IotFlatnessData(
+    values = dict(
+        blade_id=blade_id,
+        process_stage=process_stage,
         device_id=device_id,
         device_name=device_name or "",
         event_time=timestamp,
-
         measure_time=measure_time,
-        blade_id=blade_id,
         max_value=_float(data, "max_value"),
         min_value=_float(data, "min_value"),
         pv_value=_float(data, "pv_value"),
         rms=_float(data, "rms"),
         hole_angle=data.get("hole_angle"),
         hole_value=data.get("hole_value"),
-        process_stage=_str(data, "process_stage"),
     )
-    logger.debug(f"[_save_flatness_data] 模型构造完成，准备 commit")
-    db.add(rec)
+
+    stmt = mysql_insert(IotFlatnessData).values(**values)
+    # (device_id, blade_id, process_stage) 命中唯一约束时，更新其他字段
+    stmt = stmt.on_duplicate_key_update(
+        device_id=stmt.inserted.device_id,
+        device_name=stmt.inserted.device_name,
+        event_time=stmt.inserted.event_time,
+        measure_time=stmt.inserted.measure_time,
+        max_value=stmt.inserted.max_value,
+        min_value=stmt.inserted.min_value,
+        pv_value=stmt.inserted.pv_value,
+        rms=stmt.inserted.rms,
+        hole_angle=stmt.inserted.hole_angle,
+        hole_value=stmt.inserted.hole_value,
+    )
+
+    logger.debug(f"[_save_flatness_data] 执行 upsert")
+    await db.execute(stmt)
     await db.commit()
-    logger.info(f"[_save_flatness_data] 数据库写入成功: id={rec.id}, blade_id={blade_id}")
+
+    # 查询回记录以获取 id
+    rec = await db.scalar(
+        select(IotFlatnessData).where(
+            IotFlatnessData.device_id == device_id,
+            IotFlatnessData.blade_id == blade_id,
+            IotFlatnessData.process_stage == process_stage,
+        )
+    )
+    logger.info(f"[_save_flatness_data] upsert 成功: id={rec.id}, blade_id={blade_id}, stage={process_stage}")
     await db.refresh(rec)
     return rec
 

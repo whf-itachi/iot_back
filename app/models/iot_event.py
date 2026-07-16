@@ -1,6 +1,6 @@
 """IoT 事件记录表 — 接收 JetLinks Webhook 推送的叶片加工日志和平面度测量数据"""
 from datetime import datetime
-from sqlalchemy import String, Integer, BigInteger, DateTime, Float, JSON, Text, func
+from sqlalchemy import String, Integer, BigInteger, DateTime, Float, JSON, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from ..database import Base
 
@@ -61,6 +61,10 @@ class IotProcessLog(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="入库时间")
 
+    __table_args__ = (
+        UniqueConstraint("device_id", "blade_id", name="uq_process_log_device_blade"),
+    )
+
 
 class IotFlatnessData(Base):
     """平面度测量数据 — Webhook 推送 flatness_data 事件"""
@@ -84,3 +88,7 @@ class IotFlatnessData(Base):
     process_stage: Mapped[str | None] = mapped_column(String(50), comment="加工阶段(before/after)")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="入库时间")
+
+    __table_args__ = (
+        UniqueConstraint("device_id", "blade_id", "process_stage", name="uq_flatness_device_blade_stage"),
+    )
