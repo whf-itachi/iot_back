@@ -397,10 +397,14 @@ async def query_blade_list(
                 "device_name": r.device_name,
                 "_deviceId": r.device_id,
                 "_sort_time": r.event_time or 0,
+                "measure_time": r.measure_time,
             }
         stage = r.process_stage or "before"
         if stage not in blade_map[bid]:
             blade_map[bid][stage] = _flatness_to_dict(r)
+        # 如果首条记录的 measure_time 为空，用后续记录的补上
+        if not blade_map[bid].get("measure_time") and r.measure_time:
+            blade_map[bid]["measure_time"] = r.measure_time
 
     # 按时间倒序，最新数据在最上面
     return sorted(blade_map.values(), key=lambda x: x.get("_sort_time", 0) or 0, reverse=True)[:limit]
@@ -435,6 +439,7 @@ async def query_process_log_blades(
             "_deviceId": r.device_id,
             "operator": r.operator,
             "mill_result": r.mill_result,
+            "process_start_time": r.process_start_time,
             "log": _process_log_to_dict(r),
         })
     return blades
