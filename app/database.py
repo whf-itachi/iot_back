@@ -9,7 +9,6 @@ engine = create_async_engine(
     echo=False,
     pool_size=10,
     max_overflow=20,
-    pool_pre_ping=True,       # 每次从池中取出连接前先 ping 检测是否存活
     pool_recycle=3600,         # 每小时回收连接，避免 MySQL wait_timeout 断开
     connect_args={
         "connect_timeout": 10,  # 建立连接超时
