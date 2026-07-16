@@ -1,8 +1,9 @@
 """Webhook 事件处理服务 — 按事件类型写入对应表"""
-import json
+import asyncio
 import re
 from datetime import datetime
 from sqlalchemy import select, desc
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData
 from ..utils.logger import logger
@@ -17,29 +18,55 @@ async def save_event(
     data: dict,
     raw_body: str = "",
 ):
-    """根据事件类型保存到对应的表中，同时记录推送日志"""
-    logger.info(f"[save_event] 开始处理 event_type={event_type}, device_id={device_id}, blade_id={data.get('blade_id', '')}")
+    """根据事件类型保存到对应的表中，同时记录推送日志。
 
-    # 记录推送日志（所有类型都记）
-    save_webhook_log(db, device_id, device_name, event_type, timestamp, raw_body)
-    logger.debug(f"[save_event] webhook 推送日志已加入会话")
+    对 MySQL 连接丢失等瞬时错误自动重试（最多 3 次，指数退避），
+    重试时会重新创建整个事务（webhook 日志 + 业务数据）。
+    """
+    blade_id = data.get("blade_id", "")
+    logger.info(f"[save_event] 开始处理 event_type={event_type}, device_id={device_id}, blade_id={blade_id}")
 
-    try:
-        if event_type == "process_log_report":
-            result = await _save_process_log(db, device_id, device_name, timestamp, data)
-        elif event_type == "flatness_data":
-            result = await _save_flatness_data(db, device_id, device_name, timestamp, data)
-        else:
-            # 未知类型只记日志，不写入业务表
-            logger.warning(f"[save_event] 未知事件类型: {event_type}，仅记录推送日志")
-            await db.commit()
-            return None
+    max_retries = 3
+    base_delay = 0.5  # 基础等待秒数
 
-        logger.info(f"[save_event] 写入成功 event_type={event_type}, id={result.id}")
-        return result
-    except Exception as e:
-        logger.error(f"[save_event] 写入数据库失败 event_type={event_type}, device_id={device_id}: {e}", exc_info=True)
-        raise
+    for attempt in range(max_retries):
+        # 每次尝试都重新添加 webhook 日志（因为 rollback 后会清除）
+        save_webhook_log(db, device_id, device_name, event_type, timestamp, raw_body)
+        logger.debug(f"[save_event] webhook 推送日志已加入会话 (attempt {attempt+1}/{max_retries})")
+
+        try:
+            if event_type == "process_log_report":
+                result = await _save_process_log(db, device_id, device_name, timestamp, data)
+            elif event_type == "flatness_data":
+                result = await _save_flatness_data(db, device_id, device_name, timestamp, data)
+            else:
+                # 未知类型只记日志，不写入业务表
+                logger.warning(f"[save_event] 未知事件类型: {event_type}，仅记录推送日志")
+                await db.commit()
+                return None
+
+            logger.info(f"[save_event] 写入成功 event_type={event_type}, id={result.id}")
+            return result
+
+        except OperationalError as e:
+            await db.rollback()
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)  # 0.5s → 1.0s → 2.0s
+                logger.warning(
+                    f"[save_event] 写入失败 (attempt {attempt+1}/{max_retries}), "
+                    f"event_type={event_type}, blade_id={blade_id}: "
+                    f"{e._message() if hasattr(e, '_message') else e}"
+                    f" — {delay}s 后重试..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"[save_event] 写入数据库失败（已重试 {max_retries} 次） "
+                             f"event_type={event_type}, device_id={device_id}: {e}", exc_info=True)
+                raise
+
+        except Exception as e:
+            logger.error(f"[save_event] 写入数据库失败 event_type={event_type}, device_id={device_id}: {e}", exc_info=True)
+            raise
 
 
 def save_webhook_log(db: AsyncSession, device_id: str, device_name: str, event_type: str, timestamp: int, raw_body: str):
@@ -55,15 +82,26 @@ def save_webhook_log(db: AsyncSession, device_id: str, device_name: str, event_t
 
 # ============================ 工具函数 ============================
 
-# 匹配 "2026-05-13 00:18:07" 或 "2026-05-13T00:18:07" 格式
-_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
+# 匹配日期时间字符串："2026-05-13 00:18:07" / "2026-05-13T00:18:07" / "2026-05-13 09:44"（无秒）
+_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?")
 
 
 def _parse_datetime_to_ms(v: str) -> int:
-    """将 '2026-05-13 00:18:07' 或 '2026-05-13T00:18:07' 转为毫秒时间戳，失败返回 0"""
+    """将多种日期时间字符串转为毫秒时间戳，失败返回 0。
+
+    支持格式：
+      - "2026-05-13 00:18:07" / "2026-05-13T00:18:07"（精确到秒）
+      - "2026-05-13 09:44" / "2026-05-13T09:44"       （精确到分钟）
+    """
     try:
-        v = v.replace("T", " ")
-        dt = datetime.strptime(v[:19], "%Y-%m-%d %H:%M:%S")
+        v = v.replace("T", " ").strip()
+        # 根据长度选择合适的格式
+        if len(v) >= 19:
+            dt = datetime.strptime(v[:19], "%Y-%m-%d %H:%M:%S")
+        elif len(v) >= 16:
+            dt = datetime.strptime(v[:16], "%Y-%m-%d %H:%M")
+        else:
+            return 0
         return int(dt.timestamp() * 1000)
     except (ValueError, TypeError):
         return 0
