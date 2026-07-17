@@ -2,7 +2,7 @@
 import asyncio
 import re
 from datetime import datetime
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, and_, or_
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -334,13 +334,23 @@ async def query_flatness_data(
     return [_flatness_to_dict(r) for r in result.scalars().all()]
 
 
-def _process_log_to_dict(r: IotProcessLog) -> dict:
+def _base_dict(r) -> dict:
+    """Common fields present in both process log and flatness dicts."""
     return {
         "_deviceId": r.device_id,
         "_deviceName": r.device_name,
         "_timestamp": r.event_time,
         "_logId": str(r.id),
+        "device_id": r.device_id,
+        "device_name": r.device_name,
+        "event_time": r.event_time,
         "blade_id": r.blade_id,
+    }
+
+
+def _process_log_to_dict(r: IotProcessLog) -> dict:
+    return {
+        **_base_dict(r),
         "operator": r.operator,
         "process_start_time": r.process_start_time,
         "process_end_time": r.process_end_time,
@@ -447,12 +457,8 @@ async def query_process_log_blades(
 
 def _flatness_to_dict(r: IotFlatnessData) -> dict:
     return {
-        "_deviceId": r.device_id,
-        "_deviceName": r.device_name,
-        "_timestamp": r.event_time,
-        "_logId": str(r.id),
+        **_base_dict(r),
         "measure_time": r.measure_time,
-        "blade_id": r.blade_id,
         "max_value": r.max_value,
         "min_value": r.min_value,
         "pv_value": r.pv_value,
@@ -461,6 +467,109 @@ def _flatness_to_dict(r: IotFlatnessData) -> dict:
         "hole_value": r.hole_value,
         "process_stage": r.process_stage,
     }
+
+
+async def query_flatness_exact(
+    db: AsyncSession,
+    blade_id: str,
+    process_stage: str | None = None,
+) -> list[IotFlatnessData]:
+    """Exact-match query for single blade flatness by blade_id + optional stage."""
+    stmt = select(IotFlatnessData).where(IotFlatnessData.blade_id == blade_id)
+    if process_stage:
+        stmt = stmt.where(IotFlatnessData.process_stage == process_stage)
+    stmt = stmt.order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id)).limit(2)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def query_process_logs_exact(
+    db: AsyncSession,
+    blade_id: str,
+) -> list[IotProcessLog]:
+    """Exact-match query for single blade process log by blade_id."""
+    stmt = (
+        select(IotProcessLog)
+        .where(IotProcessLog.blade_id == blade_id)
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def query_process_logs_for_download(
+    db: AsyncSession,
+    device_names: list[str] | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+) -> list[IotProcessLog]:
+    """查询加工日志用于批量下载，支持按设备名列表和时间范围过滤。
+
+    时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
+    """
+
+    stmt = (
+        select(IotProcessLog)
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+    )
+
+    conditions = []
+    if device_names:
+        conditions.append(IotProcessLog.device_name.in_(device_names))
+    if start_time_ms is not None:
+        conditions.append(
+            or_(IotProcessLog.event_time >= start_time_ms,
+                IotProcessLog.event_time.is_(None))
+        )
+    if end_time_ms is not None:
+        conditions.append(
+            or_(IotProcessLog.event_time <= end_time_ms,
+                IotProcessLog.event_time.is_(None))
+        )
+
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def query_flatness_for_download(
+    db: AsyncSession,
+    device_names: list[str] | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+) -> list[IotFlatnessData]:
+    """查询平面度数据用于批量下载，支持按设备名列表和时间范围过滤。
+
+    时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
+    """
+
+    stmt = (
+        select(IotFlatnessData)
+        .order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id))
+    )
+
+    conditions = []
+    if device_names:
+        conditions.append(IotFlatnessData.device_name.in_(device_names))
+    if start_time_ms is not None:
+        conditions.append(
+            or_(IotFlatnessData.event_time >= start_time_ms,
+                IotFlatnessData.event_time.is_(None))
+        )
+    if end_time_ms is not None:
+        conditions.append(
+            or_(IotFlatnessData.event_time <= end_time_ms,
+                IotFlatnessData.event_time.is_(None))
+        )
+
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def query_flatness_statistics(
@@ -472,7 +581,6 @@ async def query_flatness_statistics(
     从 iot_process_log 中提取每片叶子的 before_flatness / after_flatness，
     计算变化量，按 blade_id 去重取最新一条。
     """
-    from sqlalchemy import desc
 
     stmt = (
         select(IotProcessLog)

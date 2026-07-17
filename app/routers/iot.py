@@ -1,29 +1,33 @@
 """IoT data router — all endpoints require auth and filter by user's bound devices"""
+import io
+import zipfile
+from datetime import datetime, timedelta
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
-from ..schemas.response import Result
 from ..services.jetlinks_service import jetlinks
 from ..services import device_service, webhook_service
+from ..services.excel_service import (
+    build_process_log_excel,
+    build_flatness_excel,
+    build_flatness_single_excel,
+    safe_filename,
+)
 from ..utils.security import require_auth
 
 router = APIRouter(tags=["IoT数据"])
 
 
-async def _get_username_and_devices(
+async def _get_allowed_device_ids(
     db: AsyncSession, current_user: dict
-) -> tuple[str, set[str]]:
-    """Get the device IDs a user is allowed to access.
-
-    Matches the frontend device list filtering logic:
-    - superadmin -> all devices
-    - regular user -> devices bound to them (including subordinate inheritance)
-    """
+) -> set[str]:
+    """Get the device IDs a user is allowed to access."""
     username = current_user.get("username", "")
     if not username:
-        return "", set()
-    ids = await device_service.get_my_device_ids(db, username)
-    return username, set(ids)
+        return set()
+    return set(await device_service.get_my_device_ids(db, username))
 
 
 def _filter_by_devices(
@@ -37,6 +41,19 @@ def _filter_by_devices(
     return [r for r in results if r.get("_deviceId") in allowed_ids]
 
 
+def _parse_time_range(start_str: str, end_str: str) -> tuple[int | None, int | None]:
+    """Convert date strings (YYYY-MM-DD) to ms timestamp range (end is 23:59:59.999)."""
+    start_ms = None
+    end_ms = None
+    if start_str:
+        start_dt = datetime.strptime(start_str[:10], "%Y-%m-%d")
+        start_ms = int(start_dt.timestamp() * 1000)
+    if end_str:
+        end_dt = datetime.strptime(end_str[:10], "%Y-%m-%d") + timedelta(days=1) - timedelta(milliseconds=1)
+        end_ms = int(end_dt.timestamp() * 1000)
+    return start_ms, end_ms
+
+
 # ==================== Aggregation endpoints ====================
 
 @router.get("/iot/device/summary")
@@ -46,7 +63,7 @@ async def device_summary(
     current_user: dict = Depends(require_auth),
 ):
     try:
-        _, _ = await _get_username_and_devices(db, current_user)
+        _ = await _get_allowed_device_ids(db, current_user)
         data = await jetlinks.get_device_summary()
         return data
     except Exception as e:
@@ -62,7 +79,7 @@ async def device_status(
     current_user: dict = Depends(require_auth),
 ):
     try:
-        _, _ = await _get_username_and_devices(db, current_user)
+        _ = await _get_allowed_device_ids(db, current_user)
         data = await jetlinks.get_device_status()
         return data
     except Exception as e:
@@ -78,7 +95,7 @@ async def spindle_trend(
     current_user: dict = Depends(require_auth),
 ):
     try:
-        _, _ = await _get_username_and_devices(db, current_user)
+        _ = await _get_allowed_device_ids(db, current_user)
         data = await jetlinks.get_spindle_trend()
         return data
     except Exception as e:
@@ -94,7 +111,7 @@ async def feedrate(
     current_user: dict = Depends(require_auth),
 ):
     try:
-        _, _ = await _get_username_and_devices(db, current_user)
+        _ = await _get_allowed_device_ids(db, current_user)
         data = await jetlinks.get_feedrate()
         return data
     except Exception as e:
@@ -111,7 +128,7 @@ async def process_log_blades(
 ):
     """List blades for a device — only returns data for user's bound devices"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
         blades = await webhook_service.query_process_log_blades(
             db, device_name=deviceName or None
         )
@@ -135,7 +152,7 @@ async def process_log_query(
 ):
     """Query process log detail — only returns data for user's bound devices"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
 
         local_logs = await webhook_service.query_process_logs(
             db, blade_id=bladeId or None
@@ -173,7 +190,7 @@ async def flatness_blades(
 ):
     """List blade flatness data for a device — only returns data for user's bound devices"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
         blades = await webhook_service.query_blade_list(
             db, device_name=deviceName or None
         )
@@ -197,7 +214,7 @@ async def flatness_query(
 ):
     """Query flatness detail — only returns data for user's bound devices"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
 
         local_logs = await webhook_service.query_flatness_data(
             db, blade_id=bladeId or None
@@ -234,7 +251,7 @@ async def flatness_statistics(
 ):
     """Flatness before/after comparison statistics — only for user's bound devices"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
         data = await webhook_service.query_flatness_statistics(db)
         data = _filter_by_devices(data, allowed)
         return {
@@ -245,6 +262,219 @@ async def flatness_statistics(
         }
     except Exception as e:
         return {"success": False, "message": str(e), "results": [], "total": 0}
+
+
+# ==================== Excel Download ====================
+
+
+@router.get("/iot/process-log/download")
+@router.get("/agg/process-log/download")
+async def process_log_download(
+    bladeId: str = Query("", alias="bladeId"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Download a single process log Excel by bladeId."""
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+
+        records = await webhook_service.query_process_logs_exact(
+            db, blade_id=bladeId
+        )
+        if allowed:
+            records = [r for r in records if r.device_id in allowed]
+        if not records:
+            return {"success": False, "message": "未找到该叶片的加工日志记录"}
+
+        r = records[0]
+        excel_data = build_process_log_excel(r)
+        blade_id = safe_filename(r.blade_id or str(r.id))
+        filename = f"加工日志_{blade_id}.xlsx"
+        encoded = quote(filename)
+
+        return StreamingResponse(
+            io.BytesIO(excel_data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+        )
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.get("/iot/flatness/download")
+@router.get("/agg/flatness/download")
+async def flatness_download(
+    bladeId: str = Query("", alias="bladeId"),
+    stage: str = Query("before", alias="stage"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Download a single-stage flatness Excel by bladeId + stage (before/after)."""
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+
+        records = await webhook_service.query_flatness_exact(
+            db, blade_id=bladeId, process_stage=stage
+        )
+        if allowed:
+            records = [r for r in records if r.device_id in allowed]
+        if not records:
+            return {"success": False, "message": "未找到该叶片的平面度测量数据"}
+
+        stage_label = "加工后" if stage == "after" else "加工前"
+        excel_data = build_flatness_single_excel(records[0], stage_label)
+        filename = f"平面度_{safe_filename(bladeId)}_{stage_label}.xlsx"
+        encoded = quote(filename)
+
+        return StreamingResponse(
+            io.BytesIO(excel_data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+        )
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ==================== Batch Download ====================
+
+
+@router.post("/iot/process-log/batch-download")
+async def process_log_batch_download(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Batch download process logs — one Excel file per blade, packed as ZIP.
+
+    Request body:
+        {
+            "deviceNames": ["device1"],
+            "startTime": "2026-07-10",   // optional
+            "endTime": "2026-07-17"      // optional
+        }
+    """
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+
+        device_names = payload.get("deviceNames") or []
+        start_str = payload.get("startTime") or ""
+        end_str = payload.get("endTime") or ""
+
+        start_ms, end_ms = _parse_time_range(start_str, end_str)
+
+        records = await webhook_service.query_process_logs_for_download(
+            db,
+            device_names=device_names if device_names else None,
+            start_time_ms=start_ms,
+            end_time_ms=end_ms,
+        )
+
+        if allowed:
+            records = [r for r in records if r.device_id in allowed]
+
+        if not records:
+            return {"success": False, "message": "所选范围内没有找到加工日志记录"}
+
+        # Build ZIP — one Excel per blade
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            used_names = set()
+            for r in records:
+                blade_id = safe_filename(r.blade_id or f"unknown_{r.id}")
+                fname = f"加工日志_{blade_id}.xlsx"
+                # Avoid duplicate filenames
+                if fname in used_names:
+                    fname = f"加工日志_{blade_id}_{r.id}.xlsx"
+                used_names.add(fname)
+                excel_data = build_process_log_excel(r)
+                zf.writestr(fname, excel_data)
+
+        zip_buf.seek(0)
+        filename = f"加工日志_批量_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        encoded = quote(filename)
+
+        return StreamingResponse(
+            zip_buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+        )
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.post("/iot/flatness/batch-download")
+async def flatness_batch_download(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Batch download flatness data — one Excel per blade (before+after in separate sheets), packed as ZIP.
+
+    Request body:
+        {
+            "deviceNames": ["device1"],
+            "startTime": "2026-07-10",   // optional
+            "endTime": "2026-07-17"      // optional
+        }
+    """
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+
+        device_names = payload.get("deviceNames") or []
+        start_str = payload.get("startTime") or ""
+        end_str = payload.get("endTime") or ""
+
+        start_ms, end_ms = _parse_time_range(start_str, end_str)
+
+        records = await webhook_service.query_flatness_for_download(
+            db,
+            device_names=device_names if device_names else None,
+            start_time_ms=start_ms,
+            end_time_ms=end_ms,
+        )
+
+        if allowed:
+            records = [r for r in records if r.device_id in allowed]
+
+        if not records:
+            return {"success": False, "message": "所选范围内没有找到平面度测量数据"}
+
+        # Group by blade_id, each blade may have before + after records
+        blade_map: dict[str, dict] = {}
+        for r in records:
+            bid = r.blade_id or f"unknown_{r.id}"
+            if bid not in blade_map:
+                blade_map[bid] = {"before": None, "after": None, "_id": r.id}
+            stage = (r.process_stage or "before").lower()
+            if stage == "after":
+                blade_map[bid]["after"] = r
+            else:
+                blade_map[bid]["before"] = r
+
+        # Build ZIP — one Excel per blade (with before/after sheets)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            used_names = set()
+            for bid, info in blade_map.items():
+                safe_bid = safe_filename(bid)
+                fname = f"平面度_{safe_bid}.xlsx"
+                if fname in used_names:
+                    fname = f"平面度_{safe_bid}_{info['_id']}.xlsx"
+                used_names.add(fname)
+                excel_data = build_flatness_excel(info["before"], info["after"])
+                zf.writestr(fname, excel_data)
+
+        zip_buf.seek(0)
+        filename = f"平面度_批量_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        encoded = quote(filename)
+
+        return StreamingResponse(
+            zip_buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+        )
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 # ==================== Device proxy (JetLinks pass-through, filtered) ====================
@@ -259,7 +489,7 @@ async def device_list_jetlinks(
     current_user: dict = Depends(require_auth),
 ):
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
         data = await jetlinks.get_device_list(page, pageSize, status, keyword)
         devices = data.get("data", [])
         if allowed:
@@ -279,7 +509,7 @@ async def device_detail_jetlinks(
 ):
     """Device detail — only accessible if device is bound to user"""
     try:
-        username, allowed = await _get_username_and_devices(db, current_user)
+        allowed = await _get_allowed_device_ids(db, current_user)
         if allowed and device_id not in allowed:
             return {"error": "Access denied for this device"}
         data = await jetlinks.get_device_detail(device_id)
