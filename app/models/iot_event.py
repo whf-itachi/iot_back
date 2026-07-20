@@ -30,7 +30,7 @@ class IotProcessLog(Base):
     event_time: Mapped[int | None] = mapped_column(BigInteger, comment="事件时间戳(毫秒)")
 
     # 加工日志业务字段
-    blade_id: Mapped[str | None] = mapped_column(String(100), index=True, comment="叶片编号")
+    blade_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True, comment="叶片编号")
     operator: Mapped[str | None] = mapped_column(String(100), comment="操作员")
     process_start_time: Mapped[int | None] = mapped_column(BigInteger, comment="加工开始时间")
     process_end_time: Mapped[int | None] = mapped_column(BigInteger, comment="加工结束时间")
@@ -78,7 +78,7 @@ class IotFlatnessData(Base):
 
     # 平面度测量业务字段
     measure_time: Mapped[int | None] = mapped_column(BigInteger, comment="测量时间")
-    blade_id: Mapped[str | None] = mapped_column(String(100), index=True, comment="叶片编号")
+    blade_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True, comment="叶片编号")
     max_value: Mapped[float | None] = mapped_column(Float, comment="最大值")
     min_value: Mapped[float | None] = mapped_column(Float, comment="最小值")
     pv_value: Mapped[float | None] = mapped_column(Float, comment="峰峰值")

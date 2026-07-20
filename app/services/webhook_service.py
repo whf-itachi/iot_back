@@ -1,5 +1,6 @@
 """Webhook 事件处理服务 — 按事件类型写入对应表"""
 import asyncio
+import json
 import re
 from datetime import datetime
 from sqlalchemy import select, desc, and_, or_
@@ -7,7 +8,11 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData
+from ..models.operation_log import SysOperationLog
 from ..utils.logger import logger
+
+# 审计日志中统一使用的操作账号（超管）
+AUDIT_ACCOUNT = "admin"
 
 
 async def save_event(
@@ -18,14 +23,15 @@ async def save_event(
     timestamp: int,
     data: dict,
     raw_body: str = "",
+    client_ip: str = "0.0.0.0",
 ):
     """根据事件类型保存到对应的表中，同时记录推送日志。
 
     对 MySQL 连接丢失等瞬时错误自动重试（最多 3 次，指数退避），
-    重试时会重新创建整个事务（webhook 日志 + 业务数据）。
+    重试时会重新创建整个事务（webhook 日志 + 业务数据 + 操作日志）。
     """
     blade_id = data.get("blade_id", "")
-    logger.info(f"[save_event] 开始处理 event_type={event_type}, device_id={device_id}, blade_id={blade_id}")
+    logger.info(f"[save_event] 开始处理 event_type={event_type}, device_id={device_id}, blade_id={blade_id}, client_ip={client_ip}")
 
     max_retries = 3
     base_delay = 0.5  # 基础等待秒数
@@ -37,13 +43,18 @@ async def save_event(
 
         try:
             if event_type == "process_log_report":
-                result = await _save_process_log(db, device_id, device_name, timestamp, data)
+                result = await _save_process_log(db, device_id, device_name, timestamp, data, client_ip=client_ip)
             elif event_type == "flatness_data":
-                result = await _save_flatness_data(db, device_id, device_name, timestamp, data)
+                result = await _save_flatness_data(db, device_id, device_name, timestamp, data, client_ip=client_ip)
             else:
                 # 未知类型只记日志，不写入业务表
                 logger.warning(f"[save_event] 未知事件类型: {event_type}，仅记录推送日志")
                 await db.commit()
+                return None
+
+            if result is None:
+                # 数据被守卫逻辑跳过（device_id / blade_id 为空），不视为失败
+                logger.warning(f"[save_event] 数据无效被跳过 event_type={event_type}, device_id={device_id}")
                 return None
 
             logger.info(f"[save_event] 写入成功 event_type={event_type}, id={result.id}")
@@ -162,9 +173,25 @@ def _str(d: dict, key: str) -> str | None:
     return str(v) if v else None
 
 
-async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, timestamp: int, data: dict):
+async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, timestamp: int, data: dict, client_ip: str = "0.0.0.0"):
     blade_id = _str(data, "blade_id")
+
+    # 守卫：设备ID / 叶片ID 必须有值才写入，缺失则跳过（不写 NULL）
+    if not device_id or not blade_id:
+        logger.warning(f"[_save_process_log] 跳过：device_id 或 blade_id 为空 (device={device_id}, blade={blade_id})")
+        return None
+
     logger.info(f"[_save_process_log] 准备写入: blade_id={blade_id}, device={device_name}")
+
+    # 写入前判断 新增 / 修改（用于审计日志），并保留修改前的快照
+    old = await db.scalar(
+        select(IotProcessLog).where(
+            IotProcessLog.device_id == device_id,
+            IotProcessLog.blade_id == blade_id,
+        )
+    )
+    exists = old is not None
+    old_dict = _process_log_to_dict(old) if old else None
 
     values = dict(
         blade_id=blade_id,
@@ -237,6 +264,17 @@ async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, 
 
     logger.debug(f"[_save_process_log] 执行 upsert")
     await db.execute(stmt)
+
+    # 操作审计日志：与业务数据同事务提交，确保原子性
+    operation_type = "修改叶片加工日志" if exists else "新增叶片加工日志"
+    detail = _build_op_detail("修改" if exists else "新增", "叶片加工日志", device_id, blade_id, values, old_dict)
+    db.add(SysOperationLog(
+        account=AUDIT_ACCOUNT,
+        operation_type=operation_type,
+        detail=detail,
+        ip_address=client_ip,
+    ))
+
     await db.commit()
 
     # 查询回记录以获取 id
@@ -246,16 +284,33 @@ async def _save_process_log(db: AsyncSession, device_id: str, device_name: str, 
             IotProcessLog.blade_id == blade_id,
         )
     )
-    logger.info(f"[_save_process_log] upsert 成功: id={log.id}, blade_id={blade_id}")
+    logger.info(f"[_save_process_log] upsert 成功: id={log.id}, blade_id={blade_id}, op={operation_type}")
     await db.refresh(log)
     return log
 
 
-async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str, timestamp: int, data: dict):
+async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str, timestamp: int, data: dict, client_ip: str = "0.0.0.0"):
     blade_id = _str(data, "blade_id")
+
+    # 守卫：设备ID / 叶片ID 必须有值才写入，缺失则跳过（不写 NULL）
+    if not device_id or not blade_id:
+        logger.warning(f"[_save_flatness_data] 跳过：device_id 或 blade_id 为空 (device={device_id}, blade={blade_id})")
+        return None
+
     process_stage = _str(data, "process_stage") or "before"
     measure_time = _int(data, "measure_time")
     logger.info(f"[_save_flatness_data] 准备写入: blade_id={blade_id}, stage={process_stage}, device={device_name}")
+
+    # 写入前判断 新增 / 修改（用于审计日志），并保留修改前的快照
+    old = await db.scalar(
+        select(IotFlatnessData).where(
+            IotFlatnessData.device_id == device_id,
+            IotFlatnessData.blade_id == blade_id,
+            IotFlatnessData.process_stage == process_stage,
+        )
+    )
+    exists = old is not None
+    old_dict = _flatness_to_dict(old) if old else None
 
     values = dict(
         blade_id=blade_id,
@@ -289,6 +344,17 @@ async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str
 
     logger.debug(f"[_save_flatness_data] 执行 upsert")
     await db.execute(stmt)
+
+    # 操作审计日志：与业务数据同事务提交，确保原子性
+    operation_type = "修改平面度测量数据" if exists else "新增平面度测量数据"
+    detail = _build_op_detail("修改" if exists else "新增", "平面度测量数据", device_id, blade_id, values, old_dict)
+    db.add(SysOperationLog(
+        account=AUDIT_ACCOUNT,
+        operation_type=operation_type,
+        detail=detail,
+        ip_address=client_ip,
+    ))
+
     await db.commit()
 
     # 查询回记录以获取 id
@@ -299,9 +365,22 @@ async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str
             IotFlatnessData.process_stage == process_stage,
         )
     )
-    logger.info(f"[_save_flatness_data] upsert 成功: id={rec.id}, blade_id={blade_id}, stage={process_stage}")
+    logger.info(f"[_save_flatness_data] upsert 成功: id={rec.id}, blade_id={blade_id}, stage={process_stage}, op={operation_type}")
     await db.refresh(rec)
     return rec
+
+
+def _build_op_detail(op_label: str, entity_label: str, device_id: str, blade_id: str, values: dict, old_dict: dict | None) -> str:
+    """构造操作日志 detail：记录写入/修改的完整数据；修改时附带修改前快照。"""
+    parts = [
+        f"{op_label}{entity_label}",
+        f"设备ID: {device_id}",
+        f"叶片ID: {blade_id}",
+    ]
+    if old_dict is not None:
+        parts.append("修改前: " + json.dumps(old_dict, ensure_ascii=False, default=str))
+    parts.append(("修改后: " if old_dict is not None else "数据: ") + json.dumps(values, ensure_ascii=False, default=str))
+    return "\n".join(parts)
 
 
 # ============================ 查询 ============================

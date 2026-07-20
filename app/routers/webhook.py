@@ -51,11 +51,13 @@ async def receive_process_log(
             timestamp = int(scene.get("timestamp") or 0)
     event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
 
+    client_ip = request.client.host if request.client else "0.0.0.0"
+
     try:
         event = await webhook_service.save_event(
             db=db, device_id=device_id, device_name=device_name,
             event_type="process_log_report", timestamp=timestamp,
-            data=event_data, raw_body=raw_text,
+            data=event_data, raw_body=raw_text, client_ip=client_ip,
         )
         logger.info(f"加工日志写入成功: id={event.id}, device={device_name}")
         return Result.ok({"id": event.id}, "加工日志已接收")
@@ -92,11 +94,13 @@ async def receive_flatness_data(
             timestamp = int(scene.get("timestamp") or 0)
     event_data = body.get("data") if isinstance(body.get("data"), dict) else {}
 
+    client_ip = request.client.host if request.client else "0.0.0.0"
+
     try:
         event = await webhook_service.save_event(
             db=db, device_id=device_id, device_name=device_name,
             event_type="flatness_data", timestamp=timestamp,
-            data=event_data, raw_body=raw_text,
+            data=event_data, raw_body=raw_text, client_ip=client_ip,
         )
         logger.info(f"平面度数据写入成功: id={event.id}, blade_id={event_data.get('blade_id', '')}, device={device_name}")
         return Result.ok({"id": event.id}, "平面度数据已接收")
