@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15   # Access Token 短期有效
-    refresh_token_expire_days: int = 7      # Refresh Token 长期有效
+    refresh_token_expire_days: int = 1      # Refresh Token 长期有效
 
     # 密码策略
     password_expire_days: int = 0  # 密码过期天数，0 表示永不过期 否测需要定期修改密码
