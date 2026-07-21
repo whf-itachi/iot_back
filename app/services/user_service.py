@@ -44,6 +44,9 @@ async def add_user(db: AsyncSession, data: dict) -> dict:
         realname=data.get("realname", ""),
         status=1,
         pwd_update_time=now,
+        parent_id=data.get("parentId") or None,
+        tenant_id=data.get("tenantId"),
+        role_type=data.get("roleType") or "employee",
     )
     db.add(user)
     await db.commit()

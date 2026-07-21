@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from ..database import get_db
 from ..schemas.response import Result
 from ..services import user_service, operation_log_service
@@ -17,6 +17,19 @@ class AddUserRequest(BaseModel):
     username: str
     password: str = "123456"
     realname: str = ""
+    parentId: str | None = None
+    tenantId: int | None = None
+    roleType: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_empty(cls, data: object) -> object:
+        # 前端下拉「不分配 / 无上级」会传空字符串，统一转为 None
+        if isinstance(data, dict):
+            for k in ("parentId", "tenantId"):
+                if data.get(k) in ("", None):
+                    data[k] = None
+        return data
 
 class EditUserRequest(BaseModel):
     realname: str | None = None
@@ -52,13 +65,18 @@ async def add_user(
     _admin: dict = Depends(require_admin),
 ):
     try:
-        data = await user_service.add_user(db, req.model_dump())
+        payload = req.model_dump()
+        # 非超管新增的用户必须挂到自己名下，否则后续 assignTenant / 编辑 / 删除
+        # 的权限链检查（check_in_my_chain）会判定“该用户不在您名下”而 403。
+        if _admin.get("role") != "superadmin":
+            payload["parentId"] = _admin.get("sub")
+        result = await user_service.add_user(db, payload)
         await operation_log_service.create_log(
             db, account=_admin.get("username", ""), operation_type="新增用户",
             detail=f"新增用户 {req.username}（{req.realname or '未填姓名'}）",
             ip_address=get_client_ip(request),
         )
-        return Result.ok(data, "新增成功")
+        return Result.ok(result, "新增成功")
     except ValueError as e:
         return Result.error(str(e))
 
