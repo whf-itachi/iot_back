@@ -38,7 +38,7 @@ async def get_log_list(
     if account:
         stmt = stmt.where(SysOperationLog.account.like(f"%{account}%"))
     if operation_type:
-        stmt = stmt.where(SysOperationLog.operation_type == operation_type)
+        stmt = stmt.where(SysOperationLog.operation_type.like(f"%{operation_type}%"))
     if start_time:
         try:
             st = datetime.fromisoformat(start_time)
