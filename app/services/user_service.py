@@ -4,7 +4,7 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.user import SysUser
-from ..utils.security import hash_password
+from ..utils.security import hash_password, check_password_strength
 
 
 async def get_user_list(db: AsyncSession, page_no: int = 1, page_size: int = 200) -> dict:
@@ -37,10 +37,14 @@ async def add_user(db: AsyncSession, data: dict) -> dict:
 
     uid = str(uuid.uuid4()).replace("-", "")[:32]
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    pwd = data.get("password", "123456")
+    strength_err = check_password_strength(pwd)
+    if strength_err:
+        raise ValueError(strength_err)
     user = SysUser(
         id=uid,
         username=data["username"],
-        password=hash_password(data.get("password", "123456")),
+        password=hash_password(pwd),
         realname=data.get("realname", ""),
         status=1,
         pwd_update_time=now,
@@ -59,6 +63,9 @@ async def edit_user(db: AsyncSession, user_id: str, data: dict) -> None:
     if not user:
         raise ValueError("用户不存在")
     if "password" in data and data["password"]:
+        strength_err = check_password_strength(data["password"])
+        if strength_err:
+            raise ValueError(strength_err)
         user.password = hash_password(data["password"])
         user.pwd_update_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     await db.commit()

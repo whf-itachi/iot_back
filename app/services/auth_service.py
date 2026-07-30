@@ -4,7 +4,7 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.user import SysUser
-from ..utils.security import hash_password, verify_password, create_access_token, create_refresh_token, is_password_expired
+from ..utils.security import hash_password, verify_password, create_access_token, create_refresh_token, is_password_expired, check_password_strength
 
 
 async def login(db: AsyncSession, username: str, password: str) -> dict:
@@ -61,12 +61,15 @@ async def change_password(
         raise ValueError("用户不存在")
 
     password_changed = False
-    # 修改密码：必须提供原密码并校验
+    # 修改密码：必须提供原密码并校验；新密码需满足强度要求（原密码不校验强度）
     if new_password:
         if not old_password:
             raise ValueError("请输入原密码")
         if not verify_password(old_password, user.password):
             raise ValueError("原密码错误")
+        strength_err = check_password_strength(new_password)
+        if strength_err:
+            raise ValueError(strength_err)
         user.password = hash_password(new_password)
         user.pwd_update_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         password_changed = True

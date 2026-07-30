@@ -1,5 +1,6 @@
 """JWT 和密码工具"""
 from datetime import datetime, timedelta, timezone
+import re
 import bcrypt
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException, Request
@@ -48,6 +49,35 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+
+# ==================== 密码强度 ====================
+
+PASSWORD_MIN_LENGTH = 5
+
+
+def check_password_strength(password: str) -> str | None:
+    """校验密码强度。返回 None 表示通过；否则返回错误提示。
+
+    规则：长度 >= 8，且至少包含「小写字母 / 大写字母 / 数字 / 特殊字符」中的 3 种。
+    注意：仅校验“新密码”强度；原密码不受影响。
+    """
+    if not password:
+        return "密码不能为空"
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"密码长度至少 {PASSWORD_MIN_LENGTH} 位"
+    categories = 0
+    if re.search(r"[a-z]", password):
+        categories += 1
+    if re.search(r"[A-Z]", password):
+        categories += 1
+    if re.search(r"\d", password):
+        categories += 1
+    if re.search(r"[^A-Za-z0-9]", password):
+        categories += 1
+    if categories < 3:
+        return "密码需包含大写字母、小写字母、数字、特殊字符中的至少 3 种"
+    return None
 
 
 def is_password_expired(pwd_update_time: datetime | None) -> bool:
