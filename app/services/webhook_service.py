@@ -655,10 +655,11 @@ async def query_flatness_statistics(
     db: AsyncSession,
     device_name: str | None = None,
 ) -> list[dict]:
-    """查询所有叶片的加工前后平面度对比统计
+    """查询叶片的加工前后平面度对比统计
 
     从 iot_process_log 中提取每片叶子的 before_flatness / after_flatness，
     计算变化量，按 blade_id 去重取最新一条。
+    可通过 device_name（设备名称）进行过滤。
     """
 
     stmt = (
@@ -704,3 +705,20 @@ async def query_flatness_statistics(
 
     # 按时间倒序，最新数据在最上面
     return sorted(stats, key=lambda x: x.get("event_time") or 0, reverse=True)
+
+
+async def query_device_names(
+    db: AsyncSession,
+    allowed_ids: set[str] | None = None,
+) -> list[str]:
+    """返回去重后的设备名称列表（可选按可访问设备 ID 过滤），用于前端过滤下拉框。"""
+
+    stmt = select(IotProcessLog.device_name).distinct()
+    if allowed_ids is not None:
+        if not allowed_ids:
+            return []
+        stmt = stmt.where(IotProcessLog.device_id.in_(allowed_ids))
+
+    result = await db.execute(stmt)
+    names = [n for n in result.scalars().all() if n]
+    return sorted(names)
