@@ -58,8 +58,6 @@ async def edit_user(db: AsyncSession, user_id: str, data: dict) -> None:
     user = result.scalar_one_or_none()
     if not user:
         raise ValueError("用户不存在")
-    if "realname" in data:
-        user.realname = data["realname"]
     if "password" in data and data["password"]:
         user.password = hash_password(data["password"])
         user.pwd_update_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)

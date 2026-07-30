@@ -32,7 +32,6 @@ class AddUserRequest(BaseModel):
         return data
 
 class EditUserRequest(BaseModel):
-    realname: str | None = None
     password: str | None = None
 
 
@@ -89,28 +88,21 @@ async def edit_user(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
-    """编辑用户：超管可编辑所有人；其他人只能编辑名下用户（非超管只能改密码）"""
+    """编辑用户：仅支持重置密码。超管可操作所有人；其他人只能操作名下（下级）用户。姓名/租户/上级不可在此修改。"""
     await check_in_my_chain(db, current_user, id)
-
 
     try:
         result = await db.execute(select(SysUser).where(SysUser.id == id))
         user = result.scalar_one_or_none()
         label = _user_label(user)
 
-        changes = []
-        if req.realname is not None:
-            changes.append(f"姓名改为「{req.realname}」")
-        if req.password is not None:
-            changes.append("修改了密码")
-
-        if not changes:
+        if req.password is None:
             return Result.ok(None, "无变更")
 
-        await user_service.edit_user(db, id, req.model_dump(exclude_none=True))
+        await user_service.edit_user(db, id, {"password": req.password})
         await operation_log_service.create_log(
             db, account=current_user.get("username", ""), operation_type="编辑用户",
-            detail=f"编辑用户 {label}：" + "，".join(changes),
+            detail=f"编辑用户 {label}：重置了密码",
             ip_address=get_client_ip(request),
         )
         return Result.ok(None, "修改成功")
