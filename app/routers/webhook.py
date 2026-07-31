@@ -110,8 +110,89 @@ async def receive_flatness_data(
 
 
 def _parse_body(raw_text: str) -> dict | None:
+    """解析 webhook 请求体（标准 JSON）。非 JSON 返回 None。
+
+    加工日志 / 平面度数据推送均为 JSON；设备状态推送走专用 _parse_device_state。
+    """
     try:
-        body = json.loads(raw_text)
-        return body if isinstance(body, dict) else None
-    except json.JSONDecodeError:
+        obj = json.loads(raw_text)
+        return obj if isinstance(obj, dict) else None
+    except (json.JSONDecodeError, ValueError):
         return None
+
+
+def _parse_device_state(raw_text: str) -> tuple[str | None, bool | None]:
+    """解析设备状态推送（固定格式：key: value 多行纯文本）。
+
+        deviceId: 156461687
+        online: True
+
+    返回 (device_id, is_online)。deviceId 缺失返回 (None, None)，online 缺失返回 (device_id, None)。
+    """
+    device_id = None
+    is_online = None
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower()
+        val = val.strip()
+        if key in ("deviceid", "device_id"):
+            device_id = val
+        elif key == "online":
+            is_online = val.lower() in ("true", "1", "online", "on", "yes")
+    return device_id, is_online
+
+
+@router.post("/webhook/event/device_state")
+async def receive_device_state(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _token: str = Depends(verify_webhook_token),
+):
+    """接收设备上下线状态变更（JetLinks 推送 device_online / device_offline 事件）
+
+    JetLinks 需配置一个 webhook 订阅，将上述事件推送到本接口，
+    并携带 X-Webhook-Token 头（值与 .env 的 WEBHOOK_TOKEN 一致）。
+    推送到达即更新本地 iot_device 状态，使首页在线设备数保持实时。
+    """
+
+    # ================= 调试日志：打印接收到的全部数据 =================
+    client_ip = request.client.host if request.client else "0.0.0.0"
+    logger.info(
+        "【设备状态推送】接收到请求 → "
+        f"client_ip={client_ip}, "
+        f"content_type={request.headers.get('content-type')}, "
+        f"has_webhook_token={'X-Webhook-Token' in request.headers}"
+    )
+
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8") if raw_body else ""
+    logger.info(f"【设备状态推送】原始请求体(raw_body):\n{raw_text}")
+
+    device_id, is_online = _parse_device_state(raw_text)
+    state_value = "online" if is_online else "offline"
+    state_text = "在线" if is_online else "离线"
+    logger.info(
+        "【设备状态推送】解析结果 → device_id=%s, state_value=%s, state_text=%s",
+        device_id, state_value, state_text,
+    )
+
+    if not device_id or is_online is None:
+        logger.warning(f"【设备状态推送】字段缺失: device_id={device_id}, is_online={is_online}")
+        webhook_service.save_webhook_log(db, device_id or "", "", "device_state", 0, raw_text)
+        await db.commit()
+        return Result.ok(None, "设备ID或在线状态缺失，已记录原始数据")
+
+    try:
+        await webhook_service.upsert_device_state(
+            db=db, device_id=device_id, device_name="",
+            state_value=state_value, state_text=state_text,
+            timestamp=0, raw_text=raw_text,
+        )
+        logger.info(f"设备状态更新成功: device={device_id} state={state_value}")
+        return Result.ok({"deviceId": device_id, "state": state_value}, "设备状态已更新")
+    except Exception as e:
+        logger.error(f"设备状态更新失败 device={device_id}: {e}", exc_info=True)
+        return Result.error(str(e))

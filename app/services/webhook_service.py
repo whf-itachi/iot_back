@@ -3,11 +3,12 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from sqlalchemy import select, desc, and_, or_
+from sqlalchemy import select, desc, and_, or_, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData
+from ..models.device import IotDevice
 from ..models.operation_log import SysOperationLog
 from ..utils.logger import logger
 
@@ -90,6 +91,99 @@ def save_webhook_log(db: AsyncSession, device_id: str, device_name: str, event_t
         raw_body=raw_body,
     )
     db.add(log)
+
+
+# ============================ 设备状态 ============================
+
+async def upsert_device_state(
+    db: AsyncSession,
+    device_id: str,
+    device_name: str,
+    state_value: str | None,
+    state_text: str | None,
+    timestamp: int,
+    raw_text: str = "",
+):
+    """将 JetLinks 推送的设备在线状态写回本地 iot_device 表。
+
+    - 设备已存在：更新 state / sync_time（名称空缺时顺带补全）。
+    - 设备不存在：创建占位记录（仅含 id 与状态），待后续手动同步补全名称/产品等信息。
+    - 对 MySQL 连接丢失等瞬时错误自动重试（最多 3 次，指数退避）。
+    """
+
+    max_retries = 3
+    base_delay = 0.5  # 基础等待秒数
+
+    for attempt in range(max_retries):
+        # 每次尝试都重新加入推送日志（rollback 后会清除）
+        save_webhook_log(db, device_id, device_name, "device_state", timestamp, raw_text)
+        try:
+            result = await _upsert_device_state_once(
+                db, device_id, device_name, state_value, state_text
+            )
+            logger.info(
+                f"[upsert_device_state] 设备状态已更新 device_id={device_id}, state={state_value} (attempt {attempt+1}/{max_retries})"
+            )
+            return result
+        except OperationalError as e:
+            await db.rollback()
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)  # 0.5s → 1.0s → 2.0s
+                logger.warning(
+                    f"[upsert_device_state] 写入失败 (attempt {attempt+1}/{max_retries}), "
+                    f"device_id={device_id}: {e._message() if hasattr(e, '_message') else e} — {delay}s 后重试..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"[upsert_device_state] 写入数据库失败（已重试 {max_retries} 次） "
+                    f"device_id={device_id}: {e}", exc_info=True
+                )
+                raise
+
+
+async def _upsert_device_state_once(
+    db: AsyncSession,
+    device_id: str,
+    device_name: str,
+    state_value: str | None,
+    state_text: str | None,
+):
+    """单条设备状态 upsert。
+
+    使用 MySQL INSERT ... ON DUPLICATE KEY UPDATE（与本项目其它 webhook 写入一致）：
+      - sync_time 始终刷新为本次接收时间；
+      - name 仅在本地为空时用推送值补全，避免覆盖手动同步得到的真实名称；
+      - state_value/state_text 仅当本次能确定状态时才写入，未知状态不覆盖已有值。
+    单语句完成、天然幂等，省去先 SELECT 再判断的开销。
+    """
+    now = datetime.now()
+    values = dict(
+        id=device_id,
+        name=device_name or "",
+        state_value=state_value or "",
+        state_text=state_text or "",
+        tenant_id=0,
+        sync_time=now,
+    )
+    # 未知状态时不写入 state 列，保留设备已有状态（不覆盖为 NULL/空）
+    if state_value is None:
+        values.pop("state_value", None)
+        values.pop("state_text", None)
+
+    stmt = mysql_insert(IotDevice).values(**values)
+    upd = dict(
+        sync_time=stmt.inserted.sync_time,
+        name=func.coalesce(IotDevice.name, stmt.inserted.name),
+    )
+    if state_value is not None:
+        upd["state_value"] = stmt.inserted.state_value
+        upd["state_text"] = stmt.inserted.state_text
+    stmt = stmt.on_duplicate_key_update(**upd)
+
+    await db.execute(stmt)
+    await db.commit()
+    return {"device_id": device_id, "state": state_value}
 
 
 # ============================ 工具函数 ============================
