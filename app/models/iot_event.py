@@ -1,6 +1,6 @@
 """IoT 事件记录表 — 接收 JetLinks Webhook 推送的叶片加工日志和平面度测量数据"""
 from datetime import datetime
-from sqlalchemy import String, Integer, BigInteger, DateTime, Float, JSON, Text, UniqueConstraint, func
+from sqlalchemy import String, Integer, BigInteger, DateTime, Float, JSON, Text, UniqueConstraint, Index, func
 from sqlalchemy.orm import Mapped, mapped_column
 from ..database import Base
 
@@ -91,4 +91,27 @@ class IotFlatnessData(Base):
 
     __table_args__ = (
         UniqueConstraint("device_id", "blade_id", "process_stage", name="uq_flatness_device_blade_stage"),
+    )
+
+
+class IotAlarm(Base):
+    """设备告警信息 — Webhook 推送 alarm_report / fault_report 事件
+
+    一个设备会上报多次告警，因此每条告警作为独立记录追加写入（不做去重/覆盖）。
+    device_id 是设备表(iot_device)的主键，在本表中为普通索引列，便于按设备查询。
+    字段固定：id(自增主键) / device_id / alarm_content / alarm_time。created_at 为系统入库时间。
+    """
+
+    __tablename__ = "iot_alarm"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False, comment="设备ID")
+    alarm_content: Mapped[str] = mapped_column(Text, nullable=False, comment="报警内容")
+    alarm_time: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="报警时间(毫秒时间戳)")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="入库时间")
+
+    __table_args__ = (
+        # 复合索引：覆盖「按设备 + 按报警时间范围/排序」高频查询（前缀 device_id 也支持单纯按设备查）
+        Index("ix_iot_alarm_device_time", "device_id", "alarm_time"),
     )

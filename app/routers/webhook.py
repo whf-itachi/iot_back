@@ -1,6 +1,6 @@
 """Webhook 路由 — 接收 JetLinks 平台推送的事件数据"""
 import json
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..config import settings
@@ -109,6 +109,44 @@ async def receive_flatness_data(
         return Result.error(str(e))
 
 
+@router.post("/webhook/event/alarm")
+async def receive_alarm(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _token: str = Depends(verify_webhook_token),
+):
+    """接收设备告警上报（JetLinks 推送 alarm_report 事件）
+
+    JetLinks 配置 webhook 订阅，将告警事件推送到本接口，并携带 X-Webhook-Token 头
+    （值与 .env 的 WEBHOOK_TOKEN 一致；开发环境留空则不校验）。
+    推送到达即解析设备ID / 报警内容 / 报警时间，写入 iot_alarm 表。
+    """
+
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8") if raw_body else ""
+    logger.info(f"收到告警推送:\n{raw_text[:2000]}")
+
+    # 优先按 JSON 解析；非 JSON 时兼容「key:value」纯文本（与设备状态同款格式）
+    body = _parse_body(raw_text)
+    if body is None:
+        body = _parse_kv_text(raw_text)
+    if body is None:
+        webhook_service.save_webhook_log(db, "", "", "alarm_report", 0, raw_text)
+        await db.commit()
+        return Result.ok(None, "已记录原始数据到推送日志")
+
+    # 告警解析与存储由独立的 save_alarm 处理（不共用 save_event，字段显式、无 device_name）
+    try:
+        event = await webhook_service.save_alarm(db=db, body=body, raw_body=raw_text)
+        if event is None:
+            return Result.ok(None, "告警数据无效，已跳过（缺少设备ID或报警内容）")
+        logger.info(f"告警写入成功: id={event.id}, device={event.device_id}")
+        return Result.ok({"id": event.id}, "告警已接收")
+    except Exception as e:
+        logger.error(f"告警写入失败: {e}", exc_info=True)
+        return Result.error(str(e))
+
+
 def _parse_body(raw_text: str) -> dict | None:
     """解析 webhook 请求体（标准 JSON）。非 JSON 返回 None。
 
@@ -143,6 +181,22 @@ def _parse_device_state(raw_text: str) -> tuple[str | None, bool | None]:
         elif key == "online":
             is_online = val.lower() in ("true", "1", "online", "on", "yes")
     return device_id, is_online
+
+
+def _parse_kv_text(raw_text: str) -> dict | None:
+    """解析「key: value」多行纯文本为 dict（键统一转小写）。
+
+    用于兼容非 JSON 的告警推送（如与设备状态同款的纯文本格式）。
+    无有效键值对时返回 None。
+    """
+    out: dict[str, str] = {}
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        out[key.strip().lower()] = val.strip()
+    return out or None
 
 
 @router.post("/webhook/event/device_state")
@@ -195,4 +249,23 @@ async def receive_device_state(
         return Result.ok({"deviceId": device_id, "state": state_value}, "设备状态已更新")
     except Exception as e:
         logger.error(f"设备状态更新失败 device={device_id}: {e}", exc_info=True)
+        return Result.error(str(e))
+
+
+@router.get("/webhook/event/alarms")
+async def list_alarms(
+    device_id: str | None = None,
+    start_time: int | None = Query(default=None, description="报警时间范围起点(毫秒时间戳，闭区间)"),
+    end_time: int | None = Query(default=None, description="报警时间范围终点(毫秒时间戳，闭区间)"),
+    limit: int = Query(default=100, ge=1, le=1000, description="返回条数上限"),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询已存储的告警记录（按报警时间倒序，支持按设备 + 时间范围过滤）"""
+    try:
+        rows = await webhook_service.query_alarms(
+            db, device_id=device_id, start_time=start_time, end_time=end_time, limit=limit
+        )
+        return Result.ok(rows, "查询成功")
+    except Exception as e:
+        logger.error(f"查询告警失败: {e}", exc_info=True)
         return Result.error(str(e))

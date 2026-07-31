@@ -7,7 +7,7 @@ from sqlalchemy import select, desc, and_, or_, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData
+from ..models.iot_event import IotWebhookLog, IotProcessLog, IotFlatnessData, IotAlarm
 from ..models.device import IotDevice
 from ..models.operation_log import SysOperationLog
 from ..utils.logger import logger
@@ -464,6 +464,56 @@ async def _save_flatness_data(db: AsyncSession, device_id: str, device_name: str
     return rec
 
 
+async def save_alarm(
+    db: AsyncSession,
+    body: dict,
+    raw_body: str = ""
+) -> "IotAlarm | None":
+    """解析并存储一条设备告警（独立于 save_event，告警字段明确，不写操作审计日志）。
+
+    与加工日志/平面度不同：告警是显式字段的简单事件，不共享 save_event 的嵌套业务解析与审计日志逻辑。
+    字段（显式，不做多种字段名猜测）：
+      - device_id：设备ID（兼容 deviceId / sourceId / device_id / source_id）
+      - alarm_content：报警内容（固定取 alarm_content，位于 data 内或顶层）
+      - alarm_time：报警时间(毫秒)；优先 body.timestamp / scene.timestamp / data.alarm_time，缺失则取当前时间
+    守卫：device_id 为空 / 非纯数字则跳过（返回 None）。alarm_content 允许为空（未提供存为空字符串）。
+    同时记录原始推送日志到 iot_webhook_log 便于追溯（告警无 device_name，留空）。
+    """
+    # 设备ID（显式取值，兼容多种键名）
+    device_id = str(body.get("device_id")).strip()
+
+    # 报警内容：固定字段，显式取值（兼容 data 内或顶层），不做多种猜测
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    _ac = body.get("alarm_content")
+    if _ac is None and isinstance(data, dict):
+        _ac = data.get("alarm_content")
+    alarm_content = str(_ac) if _ac is not None else ""
+
+    if not device_id:
+        logger.warning("[save_alarm] 跳过：device_id 为空")
+        return None
+    if not device_id.isdigit():
+        logger.warning(f"[save_alarm] 跳过：device_id 非纯数字 (device={device_id})")
+        return None
+    # 注意：alarm_content 允许为空（未提供时存为空字符串），不做跳过校验
+
+    # 报警时间：优先推送时间戳，其次 data.alarm_time，最后用当前时间
+    timestamp = int(body.get("timestamp") or 0)
+    if not timestamp and isinstance(body.get("scene"), dict):
+        timestamp = int(body["scene"].get("timestamp") or 0)
+    alarm_time = timestamp or int(data.get("alarm_time") or datetime.now().timestamp() * 1000)
+
+    # 记录原始推送日志（追溯用，告警无 device_name，留空）
+    save_webhook_log(db, device_id, "", "alarm_report", alarm_time, raw_body)
+
+    alarm = IotAlarm(device_id=device_id, alarm_content=alarm_content, alarm_time=alarm_time)
+    db.add(alarm)
+    await db.commit()
+    await db.refresh(alarm)
+    logger.info(f"[save_alarm] 写入成功: id={alarm.id}, device={device_id}, alarm_time={alarm_time}")
+    return alarm
+
+
 def _build_op_detail(op_label: str, entity_label: str, device_id: str, blade_id: str, values: dict, old_dict: dict | None) -> str:
     """构造操作日志 detail：记录写入/修改的完整数据；修改时附带修改前快照。"""
     parts = [
@@ -816,3 +866,39 @@ async def query_device_names(
     result = await db.execute(stmt)
     names = [n for n in result.scalars().all() if n]
     return sorted(names)
+
+
+# ============================ 告警查询 ============================
+
+async def query_alarms(
+    db: AsyncSession,
+    device_id: str | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """查询已存储的告警记录（按报警时间倒序，最新在前）
+
+    start_time / end_time：报警时间范围过滤（毫秒时间戳，闭区间，均可选）。
+    配合 device_id 使用时命中复合索引 (device_id, alarm_time)，性能友好。
+    """
+    stmt = select(IotAlarm).order_by(desc(IotAlarm.alarm_time), desc(IotAlarm.id))
+    if device_id:
+        stmt = stmt.where(IotAlarm.device_id == device_id)
+    if start_time is not None:
+        stmt = stmt.where(IotAlarm.alarm_time >= start_time)
+    if end_time is not None:
+        stmt = stmt.where(IotAlarm.alarm_time <= end_time)
+    stmt = stmt.limit(limit)
+    result = await db.execute(stmt)
+    return [_alarm_to_dict(r) for r in result.scalars().all()]
+
+
+def _alarm_to_dict(r: IotAlarm) -> dict:
+    return {
+        "id": r.id,
+        "device_id": r.device_id,
+        "alarm_content": r.alarm_content,
+        "alarm_time": r.alarm_time,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
