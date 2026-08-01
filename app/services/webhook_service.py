@@ -851,6 +851,94 @@ async def query_flatness_statistics(
     return sorted(stats, key=lambda x: x.get("event_time") or 0, reverse=True)
 
 
+async def query_device_process_statistics(
+    db: AsyncSession,
+    device_id: str,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    blade_keyword: str | None = None,
+) -> dict:
+    """查询某台设备的叶片加工信息统计（用于设备详情页）。
+
+    过滤条件：
+      - device_id：必填，按设备 ID 精确匹配。
+      - start_time_ms / end_time_ms：event_time（毫秒）闭区间过滤，均为可选。
+      - blade_keyword：叶片编号（叶片名称）模糊查询，可选（留空表示全部）。
+
+    统计规则：每台叶片按 blade_id 去重只取 event_time 最新一条（即「最后加工」结果）；
+    若某叶片某字段为空或 0，则该字段不参与对应平均值计算。
+
+    返回：{"records": [...], "statistics": {...}}
+    """
+
+    stmt = (
+        select(IotProcessLog)
+        .where(IotProcessLog.device_id == device_id)
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+    )
+
+    conditions = []
+    if start_time_ms is not None:
+        conditions.append(IotProcessLog.event_time >= start_time_ms)
+    if end_time_ms is not None:
+        conditions.append(IotProcessLog.event_time <= end_time_ms)
+    if blade_keyword:
+        conditions.append(IotProcessLog.blade_id.like(f"%{blade_keyword}%"))
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    # 按 blade_id 去重，每片叶子只保留最新一条（"最后加工"结果）
+    seen: dict[str, IotProcessLog] = {}
+    for r in rows:
+        bid = r.blade_id or f"unknown_{r.id}"
+        if bid not in seen:
+            seen[bid] = r
+
+    records = []
+    for bid, r in seen.items():
+        records.append({
+            "blade_id": bid,
+            "device_id": r.device_id,
+            "device_name": r.device_name,
+            "operator": r.operator,
+            "mill_result": r.mill_result,
+            "before_flatness": r.before_flatness,
+            "after_flatness": r.after_flatness,
+            "mill_depth": r.mill_depth,
+            "total_duration": r.total_duration,
+            "process_start_time": r.process_start_time,
+            "process_end_time": r.process_end_time,
+            "event_time": r.event_time,
+        })
+
+    # 按 event_time 倒序，最新数据在最上面
+    records.sort(key=lambda x: x.get("event_time") or 0, reverse=True)
+
+    # 汇总统计：字段为空或 0 不参与对应平均值
+    def _valid(val) -> bool:
+        return val is not None and val != 0
+
+    def _avg(values) -> float | None:
+        vals = [v for v in values if _valid(v)]
+        if not vals:
+            return None
+        return round(sum(vals) / len(vals), 4)
+
+    statistics = {
+        "blade_count": len(records),
+        "avg_before_flatness": _avg([r["before_flatness"] for r in records]),
+        "avg_after_flatness": _avg([r["after_flatness"] for r in records]),
+        "avg_mill_depth": _avg([r["mill_depth"] for r in records]),
+        # total_duration 落库单位为分钟(Min)
+        "avg_total_duration": _avg([r["total_duration"] for r in records]),
+    }
+
+    return {"records": records, "statistics": statistics}
+
+
 async def query_device_names(
     db: AsyncSession,
     allowed_ids: set[str] | None = None,

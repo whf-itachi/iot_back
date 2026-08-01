@@ -268,6 +268,61 @@ async def flatness_statistics(
         return {"success": False, "message": str(e), "results": [], "total": 0}
 
 
+@router.get("/iot/statistics/device-detail")
+async def device_detail_statistics(
+    device_id: str = Query(..., description="设备ID"),
+    start_time: str = Query("", description="开始日期 YYYY-MM-DD，为空表示不限"),
+    end_time: str = Query("", description="结束日期 YYYY-MM-DD，为空表示不限"),
+    blade_name: str = Query("", description="叶片名称（叶片编号）模糊查询，留空查询全部"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """设备加工详情统计 — 仅返回当前用户可访问设备的数据。
+
+    返回该设备下叶片的加工信息汇总：
+      1. 加工的叶片数量
+      2. 叶片加工前平面度测量结果平均值
+      3. 叶片最后加工平面度结果的平均值
+      4. 平均铣磨深度
+      5. 平均加工时间（分钟）
+    字段为空或 0 的叶片不参与对应平均值统计。
+    """
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+        if allowed and device_id not in allowed:
+            return {
+                "success": False,
+                "message": "无权访问该设备的加工数据",
+                "records": [],
+                "statistics": None,
+                "total": 0,
+            }
+        start_ms, end_ms = _parse_time_range(start_time, end_time)
+        data = await webhook_service.query_device_process_statistics(
+            db,
+            device_id=device_id,
+            start_time_ms=start_ms,
+            end_time_ms=end_ms,
+            blade_keyword=blade_name or None,
+        )
+        stats = data["statistics"]
+        return {
+            "success": True,
+            "message": f"{stats['blade_count']} blades",
+            "records": data["records"],
+            "statistics": stats,
+            "total": stats["blade_count"],
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "records": [],
+            "statistics": None,
+            "total": 0,
+        }
+
+
 @router.get("/iot/statistics/device-names")
 async def statistics_device_names(
     db: AsyncSession = Depends(get_db),
