@@ -996,3 +996,120 @@ def _alarm_to_dict(r: IotAlarm) -> dict:
         "alarm_time": r.alarm_time,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+async def query_device_alarms(
+    db: AsyncSession,
+    allowed_ids: set[str],
+    device_name: str | None = None,
+    blade_name: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """查询用户名下设备的告警信息（联合 iot_device 返回设备名），支持分页。
+
+    查询条件：
+      - device_name：设备名称模糊过滤（可选，留空表示全部所属设备）。
+      - blade_name：叶片名称（叶片编号）精确匹配（可选）。
+          若该条件提供，会先在候选设备的 iot_process_log 中核验叶片是否存在：
+            - 不存在 → 返回 error（"该叶片未在加工记录中找到"），alarms 为空；
+            - 存在   → 取该叶片加工记录中最早的 process_start_time ~ 最晚的
+                       process_end_time 作为告警时间筛选区间，并回显 blade_range。
+      - page / page_size：分页参数（均从 1 / 正数开始），避免一次性返回大量告警。
+
+    返回：{"alarms": [...], "blade_range": {...}|None, "error": str|None,
+           "total": int, "page": int, "page_size": int}
+      alarms 每项：device_name / device_id / alarm_content / alarm_time
+    """
+    if not allowed_ids:
+        return {"alarms": [], "blade_range": None, "error": None, "total": 0, "page": page, "page_size": page_size}
+
+    # 1) 候选设备 id -> name（按可选 device_name 过滤）
+    dev_stmt = select(IotDevice.id, IotDevice.name).where(IotDevice.id.in_(allowed_ids))
+    if device_name:
+        dev_stmt = dev_stmt.where(IotDevice.name.like(f"%{device_name}%"))
+    dev_rows = (await db.execute(dev_stmt)).all()
+    id_to_name = {d_id: (d_name or d_id) for d_id, d_name in dev_rows}
+    candidate_ids = set(id_to_name.keys())
+
+    if not candidate_ids:
+        msg = f"未找到名称为「{device_name}」的设备" if device_name else "无可用设备"
+        return {"alarms": [], "blade_range": None, "error": msg, "total": 0, "page": page, "page_size": page_size}
+
+    blade_range = None
+    alarm_start = None
+    alarm_end = None
+
+    # 2) 叶片名称特殊处理：先核验是否存在于候选设备的加工记录（精确匹配）
+    if blade_name:
+        bl_stmt = (
+            select(
+                func.count(IotProcessLog.id).label("cnt"),
+                func.min(IotProcessLog.process_start_time).label("min_start"),
+                func.max(IotProcessLog.process_end_time).label("max_end"),
+            )
+            .where(IotProcessLog.device_id.in_(candidate_ids))
+            .where(IotProcessLog.blade_id == blade_name.strip())
+        )
+        bl = (await db.execute(bl_stmt)).first()
+        if not bl or not bl.cnt:
+            return {
+                "alarms": [],
+                "blade_range": None,
+                "error": f"叶片「{blade_name}」不在所选设备的加工记录中",
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+            }
+        alarm_start = bl.min_start
+        alarm_end = bl.max_end
+        blade_range = {
+            "blade_name": blade_name,
+            "start_time": bl.min_start,
+            "end_time": bl.max_end,
+        }
+
+    # 3) 告警查询（按报警时间倒序）+ 分页
+    page = max(1, page)
+    page_size = max(1, page_size)
+    offset_val = (page - 1) * page_size
+
+    # 基础过滤条件（候选设备 + 可选叶片加工时间区间）
+    filter_conds = [IotAlarm.device_id.in_(candidate_ids)]
+    if alarm_start is not None:
+        filter_conds.append(IotAlarm.alarm_time >= alarm_start)
+    if alarm_end is not None:
+        filter_conds.append(IotAlarm.alarm_time <= alarm_end)
+
+    # 总数（用于分页）
+    count_stmt = select(func.count(IotAlarm.id)).where(and_(*filter_conds))
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # 当前页数据
+    data_stmt = (
+        select(IotAlarm)
+        .where(and_(*filter_conds))
+        .order_by(desc(IotAlarm.alarm_time), desc(IotAlarm.id))
+        .offset(offset_val)
+        .limit(page_size)
+    )
+    rows = (await db.execute(data_stmt)).scalars().all()
+
+    alarms = [
+        {
+            "device_name": id_to_name.get(r.device_id, r.device_id),
+            "device_id": r.device_id,
+            "alarm_content": r.alarm_content,
+            "alarm_time": r.alarm_time,
+        }
+        for r in rows
+    ]
+
+    return {
+        "alarms": alarms,
+        "blade_range": blade_range,
+        "error": None,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }

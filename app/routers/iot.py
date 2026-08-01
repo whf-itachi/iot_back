@@ -16,6 +16,7 @@ from ..services.excel_service import (
     safe_filename,
 )
 from ..utils.security import require_auth
+from ..utils.logger import logger
 
 router = APIRouter(tags=["IoT数据"])
 
@@ -320,6 +321,54 @@ async def device_detail_statistics(
             "records": [],
             "statistics": None,
             "total": 0,
+        }
+
+
+@router.get("/iot/alarms")
+async def device_alarms(
+    device_name: str = Query("", description="设备名称模糊查询，留空表示全部所属设备"),
+    blade_name: str = Query("", description="叶片名称（叶片编号）精确匹配，留空表示不按叶片筛选"),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """告警信息查询 — 仅返回当前用户可访问设备的告警，支持分页。
+
+    联合设备表返回设备名；支持按设备名、叶片名称筛选。
+    若按叶片名称筛选，会先核验该叶片是否在候选设备的加工记录中：
+    不在则通过 error 字段提示；在则按该叶片加工时间段(process_start~process_end)筛选告警，
+    并在 blade_range 中回显叶片加工时间范围。
+    """
+    try:
+        allowed = await _get_allowed_device_ids(db, current_user)
+        data = await webhook_service.query_device_alarms(
+            db,
+            allowed_ids=allowed,
+            device_name=device_name or None,
+            blade_name=blade_name or None,
+            page=page,
+            page_size=page_size,
+        )
+        return {
+            "success": True,
+            "alarms": data["alarms"],
+            "blade_range": data["blade_range"],
+            "error": data["error"],
+            "total": data["total"],
+            "page": data["page"],
+            "page_size": data["page_size"],
+        }
+    except Exception as e:
+        logger.error(f"查询告警信息失败: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "alarms": [],
+            "blade_range": None,
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
         }
 
 
