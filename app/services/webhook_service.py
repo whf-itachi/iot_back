@@ -876,15 +876,21 @@ async def query_alarms(
     start_time: int | None = None,
     end_time: int | None = None,
     limit: int = 100,
+    allowed_ids: set[str] | None = None,
 ) -> list[dict]:
     """查询已存储的告警记录（按报警时间倒序，最新在前）
 
     start_time / end_time：报警时间范围过滤（毫秒时间戳，闭区间，均可选）。
+    allowed_ids：仅返回这些设备 ID 的告警（用于按登录用户所属设备隔离数据）；为空集合时返回空列表。
     配合 device_id 使用时命中复合索引 (device_id, alarm_time)，性能友好。
     """
     stmt = select(IotAlarm).order_by(desc(IotAlarm.alarm_time), desc(IotAlarm.id))
     if device_id:
         stmt = stmt.where(IotAlarm.device_id == device_id)
+    if allowed_ids is not None:
+        if not allowed_ids:
+            return []
+        stmt = stmt.where(IotAlarm.device_id.in_(allowed_ids))
     if start_time is not None:
         stmt = stmt.where(IotAlarm.alarm_time >= start_time)
     if end_time is not None:

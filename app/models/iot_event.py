@@ -34,7 +34,7 @@ class IotProcessLog(Base):
     operator: Mapped[str | None] = mapped_column(String(100), comment="操作员")
     process_start_time: Mapped[int | None] = mapped_column(BigInteger, comment="加工开始时间")
     process_end_time: Mapped[int | None] = mapped_column(BigInteger, comment="加工结束时间")
-    total_duration: Mapped[int | None] = mapped_column(Integer, comment="总时长(ms)")
+    total_duration: Mapped[int | None] = mapped_column(Integer, comment="总时长(Min)")
     factory: Mapped[str | None] = mapped_column(String(200), comment="工厂")
     device_type_code: Mapped[str | None] = mapped_column(String(100), comment="设备类型编号")
     scan_result: Mapped[str | None] = mapped_column(String(50), comment="扫描结果")

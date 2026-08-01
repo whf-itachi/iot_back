@@ -6,7 +6,9 @@ from ..database import get_db
 from ..config import settings
 from ..schemas.response import Result
 from ..services import webhook_service
+from ..services.device_service import get_my_device_ids
 from ..utils.logger import logger
+from ..utils.security import require_auth
 
 router = APIRouter(tags=["Webhook"])
 
@@ -259,11 +261,14 @@ async def list_alarms(
     end_time: int | None = Query(default=None, description="报警时间范围终点(毫秒时间戳，闭区间)"),
     limit: int = Query(default=100, ge=1, le=1000, description="返回条数上限"),
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
 ):
-    """查询已存储的告警记录（按报警时间倒序，支持按设备 + 时间范围过滤）"""
+    """查询已存储的告警记录（按报警时间倒序，支持按设备 + 时间范围过滤；仅返回当前用户所属设备的告警"""
     try:
+        allowed = set(await get_my_device_ids(db, current_user.get("username", "")))
         rows = await webhook_service.query_alarms(
-            db, device_id=device_id, start_time=start_time, end_time=end_time, limit=limit
+            db, device_id=device_id, start_time=start_time, end_time=end_time, limit=limit,
+            allowed_ids=allowed,
         )
         return Result.ok(rows, "查询成功")
     except Exception as e:
