@@ -798,12 +798,15 @@ async def query_flatness_for_download(
 async def query_flatness_statistics(
     db: AsyncSession,
     device_name: str | None = None,
+    blade_name: str | None = None,
+    product: str | None = None,
 ) -> list[dict]:
     """查询叶片的加工前后平面度对比统计
 
     从 iot_process_log 中提取每片叶子的 before_flatness / after_flatness，
     计算变化量，按 blade_id 去重取最新一条。
-    可通过 device_name（设备名称）进行过滤。
+    可通过 device_name（设备名称精确匹配）、blade_name（叶片编号模糊匹配）
+    或 product（产品名称，如 IMM/HRS/DMM）进行过滤。
     """
 
     stmt = (
@@ -812,6 +815,18 @@ async def query_flatness_statistics(
     )
     if device_name:
         stmt = stmt.where(IotProcessLog.device_name == device_name)
+    if blade_name:
+        stmt = stmt.where(IotProcessLog.blade_id.like(f"%{blade_name}%"))
+    if product:
+        # 仅统计该产品下设备加工的叶片（与设备下拉的产品筛选保持一致）
+        dev_stmt = select(IotDevice.id).where(
+            func.lower(IotDevice.product_name) == product.strip().lower()
+        )
+        dev_res = await db.execute(dev_stmt)
+        dev_ids = {r[0] for r in dev_res.all()}
+        if not dev_ids:
+            return []
+        stmt = stmt.where(IotProcessLog.device_id.in_(dev_ids))
 
     result = await db.execute(stmt)
     rows = result.scalars().all()
@@ -942,14 +957,32 @@ async def query_device_process_statistics(
 async def query_device_names(
     db: AsyncSession,
     allowed_ids: set[str] | None = None,
+    product: str | None = None,
 ) -> list[str]:
-    """返回去重后的设备名称列表（可选按可访问设备 ID 过滤），用于前端过滤下拉框。"""
+    """返回去重后的设备名称列表（可选按可访问设备 ID / 产品 过滤），用于前端过滤下拉框。"""
 
-    stmt = select(IotProcessLog.device_name).distinct()
-    if allowed_ids is not None:
-        if not allowed_ids:
+    # 按产品筛选时，先取该产品下（且在可访问范围内）的设备 ID，再取这些设备有加工日志的名称
+    if product:
+        dev_stmt = select(IotDevice.id).where(
+            func.lower(IotDevice.product_name) == product.strip().lower()
+        )
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return []
+            dev_stmt = dev_stmt.where(IotDevice.id.in_(allowed_ids))
+        dev_res = await db.execute(dev_stmt)
+        dev_ids = {r[0] for r in dev_res.all()}
+        if not dev_ids:
             return []
-        stmt = stmt.where(IotProcessLog.device_id.in_(allowed_ids))
+        stmt = select(IotProcessLog.device_name).distinct().where(
+            IotProcessLog.device_id.in_(dev_ids)
+        )
+    else:
+        stmt = select(IotProcessLog.device_name).distinct()
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return []
+            stmt = stmt.where(IotProcessLog.device_id.in_(allowed_ids))
 
     result = await db.execute(stmt)
     names = [n for n in result.scalars().all() if n]

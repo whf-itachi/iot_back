@@ -248,15 +248,19 @@ async def flatness_query(
 @router.get("/iot/statistics/flatness")
 async def flatness_statistics(
     device_name: str = Query("", description="按设备名称过滤（精确匹配），留空表示不过滤"),
+    blade_name: str = Query("", description="叶片名称（叶片编号）模糊查询，留空查询全部"),
+    product: str = Query("", description="按产品筛选（IMM/HRS/DMM），留空表示不过滤"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
-    """Flatness before/after comparison statistics — only for user's bound devices, with optional device-name filtering"""
+    """Flatness before/after comparison statistics — only for user's bound devices, with optional device-name / blade-name / product filtering"""
     try:
         allowed = await _get_allowed_device_ids(db, current_user)
         data = await webhook_service.query_flatness_statistics(
             db,
             device_name=device_name or None,
+            blade_name=blade_name or None,
+            product=product or None,
         )
         data = _filter_by_devices(data, allowed)
         return {
@@ -374,13 +378,16 @@ async def device_alarms(
 
 @router.get("/iot/statistics/device-names")
 async def statistics_device_names(
+    product: str = Query("", description="按产品筛选（IMM/HRS/DMM），留空表示不过滤"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
-    """返回当前用户可访问设备中去重后的设备名称列表，供统计页过滤下拉框使用"""
+    """返回当前用户可访问设备中去重后的设备名称列表（可按产品筛选），供统计页过滤下拉框使用"""
     try:
         allowed = await _get_allowed_device_ids(db, current_user)
-        names = await webhook_service.query_device_names(db, allowed_ids=allowed)
+        names = await webhook_service.query_device_names(
+            db, allowed_ids=allowed, product=product or None
+        )
         return {"success": True, "device_names": names}
     except Exception as e:
         return {"success": False, "message": str(e), "device_names": []}
