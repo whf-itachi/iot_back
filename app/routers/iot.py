@@ -479,7 +479,8 @@ async def process_log_batch_download(
         {
             "deviceNames": ["device1"],
             "startTime": "2026-07-10",   // optional
-            "endTime": "2026-07-17"      // optional
+            "endTime": "2026-07-17",     // optional
+            "bladeName": "B001"          // optional, fuzzy match on blade_id
         }
     """
     try:
@@ -488,6 +489,7 @@ async def process_log_batch_download(
         device_names = payload.get("deviceNames") or []
         start_str = payload.get("startTime") or ""
         end_str = payload.get("endTime") or ""
+        blade_name = (payload.get("bladeName") or "").strip()
 
         start_ms, end_ms = _parse_time_range(start_str, end_str)
 
@@ -496,6 +498,7 @@ async def process_log_batch_download(
             device_names=device_names if device_names else None,
             start_time_ms=start_ms,
             end_time_ms=end_ms,
+            blade_name=blade_name if blade_name else None,
         )
 
         if allowed:
@@ -543,7 +546,8 @@ async def flatness_batch_download(
         {
             "deviceNames": ["device1"],
             "startTime": "2026-07-10",   // optional
-            "endTime": "2026-07-17"      // optional
+            "endTime": "2026-07-17",     // optional
+            "bladeName": "B001"          // optional, fuzzy match on blade_id
         }
     """
     try:
@@ -552,6 +556,7 @@ async def flatness_batch_download(
         device_names = payload.get("deviceNames") or []
         start_str = payload.get("startTime") or ""
         end_str = payload.get("endTime") or ""
+        blade_name = (payload.get("bladeName") or "").strip()
 
         start_ms, end_ms = _parse_time_range(start_str, end_str)
 
@@ -560,6 +565,7 @@ async def flatness_batch_download(
             device_names=device_names if device_names else None,
             start_time_ms=start_ms,
             end_time_ms=end_ms,
+            blade_name=blade_name if blade_name else None,
         )
 
         if allowed:

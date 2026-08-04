@@ -726,10 +726,12 @@ async def query_process_logs_for_download(
     device_names: list[str] | None = None,
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
+    blade_name: str | None = None,
 ) -> list[IotProcessLog]:
-    """查询加工日志用于批量下载，支持按设备名列表和时间范围过滤。
+    """查询加工日志用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
 
     时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
+    blade_name 为叶片编号模糊查询，留空不过滤。
     """
 
     stmt = (
@@ -740,6 +742,8 @@ async def query_process_logs_for_download(
     conditions = []
     if device_names:
         conditions.append(IotProcessLog.device_name.in_(device_names))
+    if blade_name:
+        conditions.append(IotProcessLog.blade_id.like(f"%{blade_name}%"))
     if start_time_ms is not None:
         conditions.append(
             or_(IotProcessLog.event_time >= start_time_ms,
@@ -763,10 +767,12 @@ async def query_flatness_for_download(
     device_names: list[str] | None = None,
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
+    blade_name: str | None = None,
 ) -> list[IotFlatnessData]:
-    """查询平面度数据用于批量下载，支持按设备名列表和时间范围过滤。
+    """查询平面度数据用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
 
     时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
+    blade_name 为叶片编号模糊查询，留空不过滤。
     """
 
     stmt = (
@@ -777,6 +783,8 @@ async def query_flatness_for_download(
     conditions = []
     if device_names:
         conditions.append(IotFlatnessData.device_name.in_(device_names))
+    if blade_name:
+        conditions.append(IotFlatnessData.blade_id.like(f"%{blade_name}%"))
     if start_time_ms is not None:
         conditions.append(
             or_(IotFlatnessData.event_time >= start_time_ms,
