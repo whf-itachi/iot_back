@@ -186,18 +186,53 @@ def _parse_device_state(raw_text: str) -> tuple[str | None, bool | None]:
 
 
 def _parse_kv_text(raw_text: str) -> dict | None:
-    """解析「key: value」多行纯文本为 dict（键统一转小写）。
+    """解析告警「key: value」多行纯文本为 dict（键统一转小写）。
 
-    用于兼容非 JSON 的告警推送（如与设备状态同款的纯文本格式）。
-    无有效键值对时返回 None。
+    用于兼容非 JSON 的告警推送（纯文本，行尾可能 CRLF / CR）。规则：
+      - device_id 等单行键值对按 ":" 提取，正常存入；
+      - alarm_content 通常跨多行（每行一个子告警，以 "-" 开头），取其冒号后
+        的内容连同其后所有续行，去掉换行、用空格拼接成【单行字符串】整体存入
+        （保留 "-" 作为各子告警分隔，内部不再含有换行符）。
+    无任何有效键值对时返回 None。
     """
+    if not raw_text:
+        return None
+
+    # 统一换行符（兼容 CRLF / CR）
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+
     out: dict[str, str] = {}
-    for line in (raw_text or "").splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
+    alarm_idx: int | None = None
+    for i, line in enumerate(lines):
+        # alarm_content 之后的续行都属于告警正文，不再解析为独立键值对
+        if alarm_idx is not None and i > alarm_idx:
             continue
-        key, _, val = line.partition(":")
-        out[key.strip().lower()] = val.strip()
+        s = line.strip()
+        if not s or ":" not in s:
+            continue
+        key, _, val = s.partition(":")
+        key = key.strip().lower()
+        if key == "alarm_content":
+            # 多行告警内容：记录起始行，稍后统一拼接
+            alarm_idx = i
+        else:
+            # 其余单行键值对（device_id 等）正常存入
+            out[key] = val.strip()
+
+    if alarm_idx is not None:
+        # 冒号后的内容 + 其后所有续行，去换行、空格拼接为单行
+        # 续行以 "-" 开头，拼接后保留 "-" 作为各子告警分隔
+        parts: list[str] = []
+        head = lines[alarm_idx].split(":", 1)[1].strip()
+        if head:
+            parts.append(head)
+        for nxt in lines[alarm_idx + 1:]:
+            s = nxt.strip()
+            if s:
+                parts.append(s)
+        out["alarm_content"] = " ".join(parts)
+
     return out or None
 
 
