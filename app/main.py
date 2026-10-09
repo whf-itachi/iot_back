@@ -4,9 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
 from .database import engine, Base
-from .routers import auth_router, users_router, tenants_router, devices_router, iot_router, webhook_router, operation_logs_router
+from .routers import *
 
 
 @asynccontextmanager
@@ -55,6 +54,7 @@ app.include_router(devices_router)
 app.include_router(iot_router)
 app.include_router(webhook_router)
 app.include_router(operation_logs_router)
+app.include_router(reports_router)
 
 
 @app.get("/")

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.chart import ScatterChart, Reference, Series  # type: ignore[unresolved-import]
+from openpyxl.chart import BarChart, ScatterChart, Reference, Series  # type: ignore[unresolved-import]
 from openpyxl.chart.axis import ChartLines
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
@@ -287,6 +287,254 @@ def build_flatness_single_excel(rec, stage_label: str) -> bytes:
 
     _build_flatness_sheet(ws, rec, stage_label)
 
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ============================ 统计报表 ============================
+
+def _fmt_pct(v) -> str:
+    return "-" if v is None else f"{round(v * 100, 2)}%"
+
+
+def _fmt_null(v) -> str:
+    return "-" if v is None else str(v)
+
+
+def _report_sheet_header(ws, title: str, subtitle: str) -> int:
+    """在给定工作表写入报表标题 + 副标题，返回内容起始行号（第 4 行）。"""
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 18
+    ws.merge_cells("A1:E1")
+    _set_cell(ws, 1, 1, title, _FONT_TITLE, _FILL_TITLE, _ALIGN_CENTER, _THIN_BORDER)
+    ws.row_dimensions[1].height = 30
+    ws.merge_cells("A2:E2")
+    _set_cell(ws, 2, 1, subtitle, _FONT_SUBTITLE, None, _ALIGN_LEFT, _THIN_BORDER)
+    return 4
+
+
+def _new_report_workbook(title: str, subtitle: str):
+    """Create a workbook + active sheet with a report title and subtitle row."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "报表"
+    row = _report_sheet_header(ws, title, subtitle)
+    return wb, ws, row
+
+
+def _kv_block(ws, row, kvs):
+    for label, value, unit in kvs:
+        _set_cell(ws, row, 1, label, _FONT_LABEL, _FILL_LABEL, _ALIGN_RIGHT, _THIN_BORDER)
+        _set_cell(ws, row, 2, value, _FONT_VALUE, None, _ALIGN_LEFT, _THIN_BORDER)
+        _set_cell(ws, row, 3, unit, _FONT_UNIT, None, _ALIGN_CENTER, _THIN_BORDER)
+        row += 1
+    return row
+
+
+def _table_block(ws, row, headers, rows):
+    for ci, h in enumerate(headers, 1):
+        _set_cell(ws, row, ci, h, _FONT_TBL_HDR, _FILL_TBL_HDR, _ALIGN_CENTER, _THIN_BORDER)
+    row += 1
+    for r in rows:
+        for ci, v in enumerate(r, 1):
+            _set_cell(ws, row, ci, v, _FONT_LABEL, None,
+                      _ALIGN_CENTER if ci > 1 else _ALIGN_LEFT, _THIN_BORDER)
+        row += 1
+    return row
+
+
+def _write_processing_sheet(ws, data: dict, range_label: str, filter_label: str) -> int:
+    row = _report_sheet_header(ws, "叶片加工统计报表", f"统计区间：{range_label}    筛选：{filter_label}")
+    row = _kv_block(ws, row, [
+        ("叶片总数", data.get("total_blades", 0), "片"),
+        ("合格数", data.get("qualified", 0), "片"),
+        ("合格率", _fmt_pct(data.get("qualification_rate")), ""),
+        ("报警次数", data.get("alarm_count", 0), "次"),
+        ("平均加工后平面度", _num(data.get("avg_after_flatness"), 3), "mm"),
+        ("平均总时长", _num(data.get("avg_total_duration"), 1), "Min"),
+        ("OEE（本期仅合格率）", _fmt_pct(data.get("qualification_rate")), "待补可用率/性能率"),
+    ])
+    row += 1
+    ws.merge_cells(f"A{row}:E{row}")
+    _set_cell(ws, row, 1, "分设备统计", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
+    row += 1
+    row = _table_block(
+        ws, row, ["设备", "叶片数", "合格数", "合格率"],
+        [[d["device_name"], d["total"], d["qualified"], _fmt_pct(d["qualification_rate"])]
+         for d in data.get("per_device", [])],
+    )
+    return row
+
+
+def build_processing_report_excel(data: dict, range_label: str, filter_label: str) -> bytes:
+    """加工统计报表（合格率 + 报警统计 + OEE合格率维度）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "加工统计"
+    _write_processing_sheet(ws, data, range_label, filter_label)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_oee_report_excel(data: dict, range_label: str, filter_label: str) -> bytes:
+    """设备 OEE 报告（可用率 × 性能率 × 合格率；本期仅合格率维度）。"""
+    wb, ws, row = _new_report_workbook(
+        "设备OEE报告", f"统计区间：{range_label}    筛选：{filter_label}"
+    )
+    o = data.get("overall", {})
+    row = _kv_block(ws, row, [
+        ("可用率", _fmt_null(o.get("availability")), "待采集"),
+        ("性能率", _fmt_null(o.get("performance")), "待采集"),
+        ("合格率", _fmt_pct(o.get("qualification_rate")), ""),
+        ("OEE", _fmt_null(o.get("oee")), "待采集（可用率×性能率×合格率）"),
+        ("总叶片数", o.get("total", 0), "片"),
+        ("合格数", o.get("qualified", 0), "片"),
+    ])
+    row += 1
+    ws.merge_cells(f"A{row}:E{row}")
+    _set_cell(ws, row, 1, "分设备OEE（本期仅合格率）", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
+    row += 1
+    row = _table_block(
+        ws, row, ["设备", "叶片数", "合格数", "可用率", "性能率", "合格率", "OEE"],
+        [[d["device_name"], d["total"], d["qualified"], _fmt_null(d.get("availability")),
+          _fmt_null(d.get("performance")), _fmt_pct(d.get("qualification_rate")), _fmt_null(d.get("oee"))]
+         for d in data.get("per_device", [])],
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_model_report_excel(rows: list, range_label: str, filter_label: str) -> bytes:
+    """型号统计报表（按 blade_id 前 3 位分组），以表格统计展示（与页面「型号明细」一致），并附各型号叶片数/合格数柱状图。"""
+    wb, ws, row = _new_report_workbook(
+        "型号统计报表", f"统计区间：{range_label}    筛选：{filter_label}"
+    )
+    row = _table_block(
+        ws, row,
+        ["型号（前3位）", "叶片数", "合格数", "合格率", "平均加工后平面度(mm)"],
+        [[r["model"], r["total"], r["qualified"], _fmt_pct(r["qualification_rate"]),
+          _num(r.get("avg_after_flatness"), 3)] for r in rows],
+    )
+    if rows:
+        _add_model_bar_chart(ws, row, len(rows))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_alarm_top_excel(data: dict, range_label: str, filter_label: str) -> bytes:
+    """报警频次 Top10 分析报告。"""
+    wb, ws, row = _new_report_workbook(
+        "报警频次Top10分析报告", f"统计区间：{range_label}    筛选：{filter_label}"
+    )
+    row = _kv_block(ws, row, [
+        ("告警记录总数（非空）", data.get("total_records", 0), "条"),
+        ("不同故障类型", data.get("distinct_faults", 0), "类"),
+    ])
+    row += 1
+    row = _table_block(
+        ws, row, ["排名", "故障类型", "出现次数"],
+        [[i + 1, it["fault"], it["count"]] for i, it in enumerate(data.get("items", []))],
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ---- 四合一汇总（单文件包含全部报表） ----
+def _write_oee_sheet(ws, data: dict, range_label: str, filter_label: str) -> int:
+    row = _report_sheet_header(ws, "设备OEE报告", f"统计区间：{range_label}    筛选：{filter_label}")
+    o = data.get("overall", {})
+    row = _kv_block(ws, row, [
+        ("可用率", _fmt_null(o.get("availability")), "待采集"),
+        ("性能率", _fmt_null(o.get("performance")), "待采集"),
+        ("合格率", _fmt_pct(o.get("qualification_rate")), ""),
+        ("OEE", _fmt_null(o.get("oee")), "待采集（可用率×性能率×合格率）"),
+        ("总叶片数", o.get("total", 0), "片"),
+        ("合格数", o.get("qualified", 0), "片"),
+    ])
+    row += 1
+    ws.merge_cells(f"A{row}:E{row}")
+    _set_cell(ws, row, 1, "分设备OEE（本期仅合格率）", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
+    row += 1
+    row = _table_block(
+        ws, row, ["设备", "叶片数", "合格数", "可用率", "性能率", "合格率", "OEE"],
+        [[d["device_name"], d["total"], d["qualified"], _fmt_null(d.get("availability")),
+          _fmt_null(d.get("performance")), _fmt_pct(d["qualification_rate"]), _fmt_null(d.get("oee"))]
+         for d in data.get("per_device", [])],
+    )
+    return row
+
+
+def _add_model_bar_chart(ws, end_row: int, n_rows: int) -> None:
+    """在型号统计表格下方追加「各型号叶片数 / 合格数」柱状图（数值列，绘图正确）。"""
+    if n_rows <= 0:
+        return
+    hdr_row = end_row - n_rows - 1
+    data_start = hdr_row + 1
+    data_end = hdr_row + n_rows
+    cats = Reference(ws, min_col=1, min_row=data_start, max_row=data_end)
+
+    bar = BarChart()
+    bar.type = "col"
+    bar.title = "各型号叶片数 / 合格数"
+    bar.height = 8
+    bar.width = 18
+    bar.add_data(Reference(ws, min_col=2, min_row=hdr_row, max_row=data_end), titles_from_data=True)
+    bar.add_data(Reference(ws, min_col=3, min_row=hdr_row, max_row=data_end), titles_from_data=True)
+    bar.set_categories(cats)
+    ws.add_chart(bar, f"A{data_end + 3}")
+
+
+def _write_model_sheet(ws, rows: list, range_label: str, filter_label: str) -> int:
+    row = _report_sheet_header(ws, "型号统计报表", f"统计区间：{range_label}    筛选：{filter_label}")
+    row = _table_block(
+        ws, row,
+        ["型号（前3位）", "叶片数", "合格数", "合格率", "平均加工后平面度(mm)"],
+        [[r["model"], r["total"], r["qualified"], _fmt_pct(r["qualification_rate"]),
+          _num(r.get("avg_after_flatness"), 3)] for r in rows],
+    )
+    if rows:
+        _add_model_bar_chart(ws, row, len(rows))
+    return row
+
+
+def _write_alarm_sheet(ws, data: dict, range_label: str, filter_label: str) -> int:
+    row = _report_sheet_header(ws, "报警频次Top10分析报告", f"统计区间：{range_label}    筛选：{filter_label}")
+    row = _kv_block(ws, row, [
+        ("告警记录总数（非空）", data.get("total_records", 0), "条"),
+        ("不同故障类型", data.get("distinct_faults", 0), "类"),
+    ])
+    row += 1
+    row = _table_block(
+        ws, row, ["排名", "故障类型", "出现次数"],
+        [[i + 1, it["fault"], it["count"]] for i, it in enumerate(data.get("items", []))],
+    )
+    return row
+
+
+def build_all_reports_excel(processing, oee, model_rows, alarm_top,
+                            range_label: str, filter_label: str) -> bytes:
+    """将加工统计 / OEE / 型号统计 / 报警Top10 整合到一个工作簿（四个工作表）。"""
+    wb = Workbook()
+    wb.remove(wb.active)
+    specs = [
+        ("加工统计", _write_processing_sheet, processing),
+        ("OEE报告", _write_oee_sheet, oee),
+        ("型号统计", _write_model_sheet, model_rows),
+        ("报警Top10", _write_alarm_sheet, alarm_top),
+    ]
+    for sheet_title, writer, payload in specs:
+        ws = wb.create_sheet(sheet_title)
+        writer(ws, payload, range_label, filter_label)
+    if not wb.worksheets:
+        wb.create_sheet("无数据")
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
