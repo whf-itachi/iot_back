@@ -27,7 +27,7 @@ class IotProcessLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="设备ID")
     device_name: Mapped[str | None] = mapped_column(String(200), comment="设备名称")
-    event_time: Mapped[int | None] = mapped_column(BigInteger, comment="事件时间戳(毫秒)")
+    event_time: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="事件时间戳(毫秒)")
 
     # 加工日志业务字段
     blade_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True, comment="叶片编号")
@@ -63,6 +63,9 @@ class IotProcessLog(Base):
 
     __table_args__ = (
         UniqueConstraint("device_id", "blade_id", name="uq_process_log_device_blade"),
+        # 时间索引：覆盖「按时间倒序 / 时间范围」高频查询；复合索引前缀 device_id 同时支持「按设备 + 时间」
+        Index("ix_iot_process_log_event_time", "event_time"),
+        Index("ix_iot_process_log_device_time", "device_id", "event_time"),
     )
 
 
@@ -74,7 +77,7 @@ class IotFlatnessData(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="设备ID")
     device_name: Mapped[str | None] = mapped_column(String(200), comment="设备名称")
-    event_time: Mapped[int | None] = mapped_column(BigInteger, comment="事件时间戳(毫秒)")
+    event_time: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="事件时间戳(毫秒)")
 
     # 平面度测量业务字段
     measure_time: Mapped[int | None] = mapped_column(BigInteger, comment="测量时间")
@@ -91,6 +94,9 @@ class IotFlatnessData(Base):
 
     __table_args__ = (
         UniqueConstraint("device_id", "blade_id", "process_stage", name="uq_flatness_device_blade_stage"),
+        # 时间索引：覆盖「按时间倒序 / 时间范围」高频查询；复合索引前缀 device_id 同时支持「按设备 + 时间」
+        Index("ix_iot_flatness_event_time", "event_time"),
+        Index("ix_iot_flatness_device_time", "device_id", "event_time"),
     )
 
 

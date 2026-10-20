@@ -3,7 +3,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from sqlalchemy import select, desc, and_, or_, func
+from sqlalchemy import select, desc, and_, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -730,8 +730,8 @@ async def query_process_logs_for_download(
 ) -> list[IotProcessLog]:
     """查询加工日志用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
 
-    时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
-    blade_name 为叶片编号模糊查询，留空不过滤。
+    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），
+    按闭区间范围过滤。blade_name 为叶片编号模糊查询，留空不过滤。
     """
 
     stmt = (
@@ -745,15 +745,9 @@ async def query_process_logs_for_download(
     if blade_name:
         conditions.append(IotProcessLog.blade_id.like(f"%{blade_name}%"))
     if start_time_ms is not None:
-        conditions.append(
-            or_(IotProcessLog.event_time >= start_time_ms,
-                IotProcessLog.event_time.is_(None))
-        )
+        conditions.append(IotProcessLog.event_time >= start_time_ms)
     if end_time_ms is not None:
-        conditions.append(
-            or_(IotProcessLog.event_time <= end_time_ms,
-                IotProcessLog.event_time.is_(None))
-        )
+        conditions.append(IotProcessLog.event_time <= end_time_ms)
 
     if conditions:
         stmt = stmt.where(and_(*conditions))
@@ -771,8 +765,8 @@ async def query_flatness_for_download(
 ) -> list[IotFlatnessData]:
     """查询平面度数据用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
 
-    时间过滤使用 event_time（始终为毫秒时间戳），若 event_time 为空则包含该记录。
-    blade_name 为叶片编号模糊查询，留空不过滤。
+    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），
+    按闭区间范围过滤。blade_name 为叶片编号模糊查询，留空不过滤。
     """
 
     stmt = (
@@ -786,15 +780,9 @@ async def query_flatness_for_download(
     if blade_name:
         conditions.append(IotFlatnessData.blade_id.like(f"%{blade_name}%"))
     if start_time_ms is not None:
-        conditions.append(
-            or_(IotFlatnessData.event_time >= start_time_ms,
-                IotFlatnessData.event_time.is_(None))
-        )
+        conditions.append(IotFlatnessData.event_time >= start_time_ms)
     if end_time_ms is not None:
-        conditions.append(
-            or_(IotFlatnessData.event_time <= end_time_ms,
-                IotFlatnessData.event_time.is_(None))
-        )
+        conditions.append(IotFlatnessData.event_time <= end_time_ms)
 
     if conditions:
         stmt = stmt.where(and_(*conditions))
