@@ -32,7 +32,7 @@ import sys
 
 from sqlalchemy import text
 
-from app.database import engine, async_session
+from app.database import async_session
 
 
 TABLES = ["iot_process_log", "iot_flatness_data"]

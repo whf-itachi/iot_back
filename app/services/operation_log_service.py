@@ -32,26 +32,31 @@ async def get_log_list(
     start_time: str | None = None,
     end_time: str | None = None,
 ) -> dict:
-    """分页查询操作日志"""
+    """分页查询操作日志（开始/结束时间为空时默认近一年，防御性边界）"""
+    now = datetime.now()
+    if start_time:
+        try:
+            st = datetime.fromisoformat(start_time)
+        except ValueError:
+            st = datetime(now.year - 1, now.month, now.day, 0, 0, 0)
+    else:
+        st = datetime(now.year - 1, now.month, now.day, 0, 0, 0)
+    if end_time:
+        try:
+            et = datetime.fromisoformat(end_time) + timedelta(days=1)
+        except ValueError:
+            et = now + timedelta(days=1)
+    else:
+        et = now + timedelta(days=1)
+
     stmt = select(SysOperationLog)
 
     if account:
         stmt = stmt.where(SysOperationLog.account.like(f"%{account}%"))
     if operation_type:
         stmt = stmt.where(SysOperationLog.operation_type.like(f"%{operation_type}%"))
-    if start_time:
-        try:
-            st = datetime.fromisoformat(start_time)
-            stmt = stmt.where(SysOperationLog.operate_time >= st)
-        except ValueError:
-            pass
-    if end_time:
-        try:
-            et = datetime.fromisoformat(end_time)
-            et = et + timedelta(days=1)
-            stmt = stmt.where(SysOperationLog.operate_time < et)
-        except ValueError:
-            pass
+    stmt = stmt.where(SysOperationLog.operate_time >= st)
+    stmt = stmt.where(SysOperationLog.operate_time < et)
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total_result = await db.execute(count_stmt)

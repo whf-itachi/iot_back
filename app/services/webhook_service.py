@@ -529,34 +529,6 @@ def _build_op_detail(op_label: str, entity_label: str, device_id: str, blade_id:
 
 # ============================ 查询 ============================
 
-async def query_process_logs(
-    db: AsyncSession,
-    blade_id: str | None = None,
-    limit: int = 100,
-) -> list[dict]:
-    """从本地数据库查询加工日志"""
-    stmt = select(IotProcessLog).order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
-    if blade_id:
-        stmt = stmt.where(IotProcessLog.blade_id.like(f"%{blade_id}%"))
-    stmt = stmt.limit(limit)
-    result = await db.execute(stmt)
-    return [_process_log_to_dict(r) for r in result.scalars().all()]
-
-
-async def query_flatness_data(
-    db: AsyncSession,
-    blade_id: str | None = None,
-    limit: int = 100,
-) -> list[dict]:
-    """从本地数据库查询平面度测量数据"""
-    stmt = select(IotFlatnessData).order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id))
-    if blade_id:
-        stmt = stmt.where(IotFlatnessData.blade_id.like(f"%{blade_id}%"))
-    stmt = stmt.limit(limit)
-    result = await db.execute(stmt)
-    return [_flatness_to_dict(r) for r in result.scalars().all()]
-
-
 def _base_dict(r) -> dict:
     """Common fields present in both process log and flatness dicts."""
     return {
@@ -606,76 +578,164 @@ def _process_log_to_dict(r: IotProcessLog) -> dict:
 
 async def query_blade_list(
     db: AsyncSession,
-    device_name: str | None = None,
-    limit: int = 200,
-) -> list[dict]:
-    """查询所有叶片及其加工前/后平面度数据（按设备名过滤）"""
+    device_filter: set[str] | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """分页查询叶片及其加工前/后平面度数据（按设备ID集合过滤）。
+
+    返回 {"items": [...], "total": int}，total 为匹配到的 distinct(设备,叶片) 总数，
+    供前端分页组件使用。列表只返回摘要 + before/after 各自的主键 id，
+    完整明细由前端按 id 调 /iot/flatness/detail/{id} 获取。
+
+    由于每个 (设备,叶片) 在 iot_flatness_data 中最多 2 行（before/after），
+    分页时按"行"做 offset/limit 后再在 Python 中聚合；向后多抓 2 行 + 缓冲 6 行，
+    确保分页边界处的叶片不会因 before/after 跨页被截断而丢失。
+    """
+    page = max(1, page)
+    page_size = max(1, page_size)
+    base_where = []
+    if device_filter is not None:
+        if not device_filter:
+            return {"items": [], "total": 0}
+        base_where.append(IotFlatnessData.device_id.in_(device_filter))
+
+    # distinct(设备,叶片) 总数
+    distinct_stmt = select(IotFlatnessData.device_id, IotFlatnessData.blade_id).distinct()
+    if base_where:
+        distinct_stmt = distinct_stmt.where(*base_where)
+    total = (await db.execute(select(func.count()).select_from(distinct_stmt.subquery()))).scalar() or 0
+
+    # 按行分页：每叶片最多 2 行；第 2 页起向后重叠 2 行，避免边界叶片被截断丢失
+    offset_rows = (page - 1) * page_size * 2
+    if page > 1:
+        offset_rows = max(0, offset_rows - 2)
+    limit_rows = page_size * 2 + 6
+
     stmt = (
         select(IotFlatnessData)
         .order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id))
     )
-    if device_name:
-        stmt = stmt.where(IotFlatnessData.device_name == device_name)
-    stmt = stmt.limit(limit * 2)  # 每个 blade 最多 2 条
+    if base_where:
+        stmt = stmt.where(*base_where)
+    stmt = stmt.offset(offset_rows).limit(limit_rows)
     result = await db.execute(stmt)
     rows = result.scalars().all()
 
-    # 按 blade_id 分组，提取 before/after；rows 已按时间倒序，首次出现即最新
-    blade_map: dict[str, dict] = {}
+    # 按 (device_id, blade_id) 分组聚合；同名 blade_id 在不同设备上是不同个体，必须以 device_id 区分
+    blade_map: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
     for r in rows:
         bid = r.blade_id or f"unknown_{r.id}"
-        if bid not in blade_map:
-            blade_map[bid] = {
+        key = (r.device_id, bid)
+        if key not in blade_map:
+            blade_map[key] = {
+                "id": r.id,
                 "blade_id": bid,
                 "device_name": r.device_name,
                 "_deviceId": r.device_id,
                 "_sort_time": r.event_time or 0,
                 "measure_time": r.measure_time,
+                "before_id": None,
+                "after_id": None,
             }
-        stage = r.process_stage or "before"
-        if stage not in blade_map[bid]:
-            blade_map[bid][stage] = _flatness_to_dict(r)
-        # 如果首条记录的 measure_time 为空，用后续记录的补上
-        if not blade_map[bid].get("measure_time") and r.measure_time:
-            blade_map[bid]["measure_time"] = r.measure_time
+            order.append(key)
+        stage = (r.process_stage or "before").lower()
+        blade_map[key][f"{stage}_id"] = r.id
+        if not blade_map[key].get("measure_time") and r.measure_time:
+            blade_map[key]["measure_time"] = r.measure_time
 
-    # 按时间倒序，最新数据在最上面
-    return sorted(blade_map.values(), key=lambda x: x.get("_sort_time", 0) or 0, reverse=True)[:limit]
+    # 仅保留 before/after 都齐全的完整叶片，截取本页 page_size 个（最新的在最前）
+    items = []
+    for key in order:
+        g = blade_map[key]
+        if g.get("before_id") is None or g.get("after_id") is None:
+            continue
+        items.append(g)
+        if len(items) >= page_size:
+            break
+    return {"items": items, "total": total}
+
+
+async def query_flatness_by_id(
+    db: AsyncSession, flatness_id: int
+) -> dict | None:
+    """按 IotFlatnessData 主键 id 获取单条平面度测量详情（完整字段，含 hole_angle/hole_value）。
+
+    设备隔离由调用方通过 _filter_by_devices 用 allowed 集合兜底，
+    本方法只负责按 id 取数。
+    """
+    stmt = select(IotFlatnessData).where(IotFlatnessData.id == flatness_id)
+    res = await db.execute(stmt)
+    r = res.scalar_one_or_none()
+    return _flatness_to_dict(r) if r else None
 
 
 async def query_process_log_blades(
     db: AsyncSession,
-    device_name: str | None = None,
-    limit: int = 200,
-) -> list[dict]:
-    """查询所有叶片的加工日志（按设备名过滤）"""
+    device_filter: set[str] | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """分页查询叶片加工日志（按设备ID集合过滤）。
+
+    返回 {"items": [...], "total": int}，total 为匹配总数，供前端分页组件使用。
+    IotProcessLog 在 (device_id, blade_id) 上有唯一键，每个 (设备, 叶片) 恒为 1 行，
+    无需读取端去重。按 event_time 倒序，第 1 页即"最新一页"。
+    """
+    page = max(1, page)
+    page_size = max(1, page_size)
+    base_where = []
+    if device_filter is not None:
+        if not device_filter:
+            return {"items": [], "total": 0}
+        base_where.append(IotProcessLog.device_id.in_(device_filter))
+
+    # 总数
+    count_stmt = select(func.count()).select_from(IotProcessLog)
+    if base_where:
+        count_stmt = count_stmt.where(*base_where)
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # 分页（按时间倒序，最新在前面）
     stmt = (
         select(IotProcessLog)
         .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
     )
-    if device_name:
-        stmt = stmt.where(IotProcessLog.device_name == device_name)
-    stmt = stmt.limit(limit)
+    if base_where:
+        stmt = stmt.where(*base_where)
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(stmt)
     rows = result.scalars().all()
 
-    blades = []
-    seen = set()
+    items = []
     for r in rows:
         bid = r.blade_id or f"unknown_{r.id}"
-        if bid in seen:
-            continue
-        seen.add(bid)
-        blades.append({
+        items.append({
+            "id": r.id,
             "blade_id": bid,
             "device_name": r.device_name,
             "_deviceId": r.device_id,
             "operator": r.operator,
             "mill_result": r.mill_result,
             "process_start_time": r.process_start_time,
-            "log": _process_log_to_dict(r),
+            "event_time": r.event_time,
         })
-    return blades
+    return {"items": items, "total": total}
+
+
+async def query_process_log_by_id(
+    db: AsyncSession, log_id: int
+) -> dict | None:
+    """按 IotProcessLog 主键 id 获取单条加工日志详情（完整字段）。
+
+    设备隔离由调用方通过 _filter_by_devices 用 allowed 集合兜底，
+    本方法只负责按 id 取数。
+    """
+    stmt = select(IotProcessLog).where(IotProcessLog.id == log_id)
+    res = await db.execute(stmt)
+    r = res.scalar_one_or_none()
+    return _process_log_to_dict(r) if r else None
 
 
 def _flatness_to_dict(r: IotFlatnessData) -> dict:
@@ -696,11 +756,18 @@ async def query_flatness_exact(
     db: AsyncSession,
     blade_id: str,
     process_stage: str | None = None,
+    device_ids: set[str] | None = None,
 ) -> list[IotFlatnessData]:
-    """Exact-match query for single blade flatness by blade_id + optional stage."""
+    """Exact-match query for single blade flatness by blade_id + optional stage.
+
+    device_ids 为设备ID集合（下推到 SQL 的 device_id IN (...)）；None 表示不按设备过滤
+    （由调用方已完成的设备隔离/全量语义决定）。
+    """
     stmt = select(IotFlatnessData).where(IotFlatnessData.blade_id == blade_id)
     if process_stage:
         stmt = stmt.where(IotFlatnessData.process_stage == process_stage)
+    if device_ids is not None:
+        stmt = stmt.where(IotFlatnessData.device_id.in_(device_ids))
     stmt = stmt.order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id)).limit(2)
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -709,45 +776,59 @@ async def query_flatness_exact(
 async def query_process_logs_exact(
     db: AsyncSession,
     blade_id: str,
+    device_ids: set[str] | None = None,
 ) -> list[IotProcessLog]:
-    """Exact-match query for single blade process log by blade_id."""
+    """Exact-match query for single blade process log by blade_id.
+
+    device_ids 为设备ID集合（下推到 SQL 的 device_id IN (...)）；None 表示不按设备过滤
+    （由调用方已完成的设备隔离/全量语义决定）。
+    """
     stmt = (
         select(IotProcessLog)
         .where(IotProcessLog.blade_id == blade_id)
-        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
-        .limit(1)
     )
+    if device_ids is not None:
+        stmt = stmt.where(IotProcessLog.device_id.in_(device_ids))
+    stmt = stmt.order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id)).limit(1)
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
 async def query_process_logs_for_download(
     db: AsyncSession,
-    device_names: list[str] | None = None,
+    device_filter: set[str] | None = None,
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     blade_name: str | None = None,
 ) -> list[IotProcessLog]:
-    """查询加工日志用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
+    """查询加工日志用于批量下载，支持按设备ID集合、时间范围和叶片名称模糊过滤。
 
-    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），
-    按闭区间范围过滤。blade_name 为叶片编号模糊查询，留空不过滤。
+    时间范围（start_time_ms / end_time_ms）为必填 —— 不允许无边界拉取全表数据。
+    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），按闭区间范围过滤。
+    blade_name 为叶片编号模糊查询，留空不过滤。
+    device_filter 为设备ID集合：None 表示不按设备过滤；空集表示无可用设备直接返回空。
+    单次最多返回 DOWNLOAD_MAX_ROWS 行（防御性上限）。
     """
+
+    # 下载必须带时间范围，禁止无边界拉取
+    if start_time_ms is None or end_time_ms is None:
+        return []
 
     stmt = (
         select(IotProcessLog)
         .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+        .limit(DOWNLOAD_MAX_ROWS)
     )
 
     conditions = []
-    if device_names:
-        conditions.append(IotProcessLog.device_name.in_(device_names))
+    if device_filter is not None:
+        if not device_filter:
+            return []
+        conditions.append(IotProcessLog.device_id.in_(device_filter))
     if blade_name:
         conditions.append(IotProcessLog.blade_id.like(f"%{blade_name}%"))
-    if start_time_ms is not None:
-        conditions.append(IotProcessLog.event_time >= start_time_ms)
-    if end_time_ms is not None:
-        conditions.append(IotProcessLog.event_time <= end_time_ms)
+    conditions.append(IotProcessLog.event_time >= start_time_ms)
+    conditions.append(IotProcessLog.event_time <= end_time_ms)
 
     if conditions:
         stmt = stmt.where(and_(*conditions))
@@ -758,31 +839,39 @@ async def query_process_logs_for_download(
 
 async def query_flatness_for_download(
     db: AsyncSession,
-    device_names: list[str] | None = None,
+    device_filter: set[str] | None = None,
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     blade_name: str | None = None,
 ) -> list[IotFlatnessData]:
-    """查询平面度数据用于批量下载，支持按设备名列表、时间范围和叶片名称模糊过滤。
+    """查询平面度数据用于批量下载，支持按设备ID集合、时间范围和叶片名称模糊过滤。
 
-    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），
-    按闭区间范围过滤。blade_name 为叶片编号模糊查询，留空不过滤。
+    时间范围（start_time_ms / end_time_ms）为必填 —— 不允许无边界拉取全表数据。
+    时间过滤使用 event_time（毫秒时间戳；写入链路保证至少为 0、不会为空），按闭区间范围过滤。
+    blade_name 为叶片编号模糊查询，留空不过滤。
+    device_filter 为设备ID集合：None 表示不按设备过滤；空集表示无可用设备直接返回空。
+    单次最多返回 DOWNLOAD_MAX_ROWS 行（防御性上限）。
     """
+
+    # 下载必须带时间范围，禁止无边界拉取
+    if start_time_ms is None or end_time_ms is None:
+        return []
 
     stmt = (
         select(IotFlatnessData)
         .order_by(desc(IotFlatnessData.event_time), desc(IotFlatnessData.id))
+        .limit(DOWNLOAD_MAX_ROWS)
     )
 
     conditions = []
-    if device_names:
-        conditions.append(IotFlatnessData.device_name.in_(device_names))
+    if device_filter is not None:
+        if not device_filter:
+            return []
+        conditions.append(IotFlatnessData.device_id.in_(device_filter))
     if blade_name:
         conditions.append(IotFlatnessData.blade_id.like(f"%{blade_name}%"))
-    if start_time_ms is not None:
-        conditions.append(IotFlatnessData.event_time >= start_time_ms)
-    if end_time_ms is not None:
-        conditions.append(IotFlatnessData.event_time <= end_time_ms)
+    conditions.append(IotFlatnessData.event_time >= start_time_ms)
+    conditions.append(IotFlatnessData.event_time <= end_time_ms)
 
     if conditions:
         stmt = stmt.where(and_(*conditions))
@@ -791,51 +880,48 @@ async def query_flatness_for_download(
     return list(result.scalars().all())
 
 
+# 下载接口单次最大导出行数（防御性上限：即便时间范围很大也不至于 OOM）
+DOWNLOAD_MAX_ROWS = 200_000
+
+
 async def query_flatness_statistics(
     db: AsyncSession,
-    device_name: str | None = None,
+    device_filter: set[str] | None = None,
     blade_name: str | None = None,
-    product: str | None = None,
 ) -> list[dict]:
     """查询叶片的加工前后平面度对比统计
 
     从 iot_process_log 中提取每片叶子的 before_flatness / after_flatness，
-    计算变化量，按 blade_id 去重取最新一条。
-    可通过 device_name（设备名称精确匹配）、blade_name（叶片编号模糊匹配）
-    或 product（产品名称，如 IMM/HRS/DMM）进行过滤。
+    计算变化量。注：写入侧已对 (device_id, blade_id) 做 upsert，每个 (device, blade)
+    仅保留最新一条，读取时无需再按 blade_id 去重。
+    过滤条件：
+      - device_filter：设备ID集合（按登录用户可访问设备隔离），None 表示不按设备过滤；
+        空集表示「无可用设备」直接返回空。产品等维度由调用方解析为设备集合后传入。
+      - blade_name：叶片编号（叶片名称）模糊查询，可选。
+    查询统一使用 device_id 过滤，不在数据表上按 device_name 过滤。
     """
 
-    stmt = (
-        select(IotProcessLog)
-        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
-    )
-    if device_name:
-        stmt = stmt.where(IotProcessLog.device_name == device_name)
-    if blade_name:
-        stmt = stmt.where(IotProcessLog.blade_id.like(f"%{blade_name}%"))
-    if product:
-        # 仅统计该产品下设备加工的叶片（与设备下拉的产品筛选保持一致）
-        dev_stmt = select(IotDevice.id).where(
-            func.lower(IotDevice.product_name) == product.strip().lower()
-        )
-        dev_res = await db.execute(dev_stmt)
-        dev_ids = {r[0] for r in dev_res.all()}
-        if not dev_ids:
+    conditions = []
+    if device_filter is not None:
+        if not device_filter:
             return []
-        stmt = stmt.where(IotProcessLog.device_id.in_(dev_ids))
+        conditions.append(IotProcessLog.device_id.in_(device_filter))
+    if blade_name:
+        conditions.append(IotProcessLog.blade_id.like(f"%{blade_name}%"))
+
+    # 写入侧对 (device_id, blade_id) 做 upsert（最新一条覆盖），存储层每个 (device, blade) 恒为 1 行，
+    # 无需再按 blade_id 去重；按设备 + 时间过滤后直接取最新即可。
+    stmt = select(IotProcessLog)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    stmt = stmt.order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
 
     result = await db.execute(stmt)
     rows = result.scalars().all()
 
-    # 按 blade_id 去重，每片叶子只取最新的记录
-    seen = {}
-    for r in rows:
-        bid = r.blade_id or f"unknown_{r.id}"
-        if bid not in seen:
-            seen[bid] = r
-
     stats = []
-    for bid, r in seen.items():
+    for r in rows:
+        bid = r.blade_id
         before_val = r.before_flatness
         after_val = r.after_flatness
         # 计算改善量：正值表示平面度变好
@@ -876,40 +962,33 @@ async def query_device_process_statistics(
       - start_time_ms / end_time_ms：event_time（毫秒）闭区间过滤，均为可选。
       - blade_keyword：叶片编号（叶片名称）模糊查询，可选（留空表示全部）。
 
-    统计规则：每台叶片按 blade_id 去重只取 event_time 最新一条（即「最后加工」结果）；
+    统计规则：每台叶片因写入侧 upsert 恒为 1 行（即「最后加工」结果），无需读取时去重；
     若某叶片某字段为空或 0，则该字段不参与对应平均值计算。
 
     返回：{"records": [...], "statistics": {...}}
     """
 
-    stmt = (
-        select(IotProcessLog)
-        .where(IotProcessLog.device_id == device_id)
-        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
-    )
-
-    conditions = []
+    conditions = [IotProcessLog.device_id == device_id]
     if start_time_ms is not None:
         conditions.append(IotProcessLog.event_time >= start_time_ms)
     if end_time_ms is not None:
         conditions.append(IotProcessLog.event_time <= end_time_ms)
     if blade_keyword:
         conditions.append(IotProcessLog.blade_id.like(f"%{blade_keyword}%"))
-    if conditions:
-        stmt = stmt.where(and_(*conditions))
+
+    # (device_id, blade_id) 写入侧已 upsert，本设备每叶片恒 1 行，无需按 blade_id 去重
+    stmt = (
+        select(IotProcessLog)
+        .where(and_(*conditions))
+        .order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
+    )
 
     result = await db.execute(stmt)
     rows = result.scalars().all()
 
-    # 按 blade_id 去重，每片叶子只保留最新一条（"最后加工"结果）
-    seen: dict[str, IotProcessLog] = {}
+    records = []
     for r in rows:
         bid = r.blade_id or f"unknown_{r.id}"
-        if bid not in seen:
-            seen[bid] = r
-
-    records = []
-    for bid, r in seen.items():
         records.append({
             "blade_id": bid,
             "device_id": r.device_id,
@@ -1029,7 +1108,7 @@ def _alarm_to_dict(r: IotAlarm) -> dict:
 
 async def query_device_alarms(
     db: AsyncSession,
-    allowed_ids: set[str],
+    allowed_ids: set[str] | None = None,
     device_name: str | None = None,
     blade_name: str | None = None,
     page: int = 1,
@@ -1050,11 +1129,14 @@ async def query_device_alarms(
            "total": int, "page": int, "page_size": int}
       alarms 每项：device_name / device_id / alarm_content / alarm_time
     """
-    if not allowed_ids:
+    if allowed_ids is not None and not allowed_ids:
         return {"alarms": [], "blade_range": None, "error": None, "total": 0, "page": page, "page_size": page_size}
 
     # 1) 候选设备 id -> name（按可选 device_name 过滤）
-    dev_stmt = select(IotDevice.id, IotDevice.name).where(IotDevice.id.in_(allowed_ids))
+    # allowed_ids 为 None 表示无设备范围限制（如超管），此时不加 device_id 过滤
+    dev_stmt = select(IotDevice.id, IotDevice.name)
+    if allowed_ids is not None:
+        dev_stmt = dev_stmt.where(IotDevice.id.in_(allowed_ids))
     if device_name:
         dev_stmt = dev_stmt.where(IotDevice.name.like(f"%{device_name}%"))
     dev_rows = (await db.execute(dev_stmt)).all()

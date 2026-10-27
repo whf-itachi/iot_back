@@ -73,35 +73,30 @@ async def _device_ids_for_name(
 # 通用取数
 # ----------------------------------------------------------------------------
 
-async def _fetch_deduped_blades(
+async def _fetch_process_logs(
     db: AsyncSession,
     dev_ids: set[str] | None,
     start_ms: int | None,
     end_ms: int | None,
-    device_name: str | None,
 ) -> list[IotProcessLog]:
-    """拉取加工日志并按 blade_id 去重（每叶片取 event_time 最新一条）。"""
-    stmt = select(IotProcessLog)
+    """拉取加工日志（按 device_id 集合 + 时间范围过滤）。
+
+    写入侧已对 (device_id, blade_id) 做 upsert（最新一条覆盖），存储层每个 (device, blade)
+    恒为 1 行，无需读取时按 blade_id 去重。设备过滤统一通过 dev_ids（device_id 集合）下推。
+    """
     conds = []
     if dev_ids is not None:
         conds.append(IotProcessLog.device_id.in_(dev_ids))
-    if device_name:
-        conds.append(IotProcessLog.device_name == device_name)
     if start_ms is not None:
         conds.append(IotProcessLog.event_time >= start_ms)
     if end_ms is not None:
         conds.append(IotProcessLog.event_time <= end_ms)
+
+    stmt = select(IotProcessLog)
     if conds:
         stmt = stmt.where(and_(*conds))
     stmt = stmt.order_by(desc(IotProcessLog.event_time), desc(IotProcessLog.id))
-    rows = (await db.execute(stmt)).scalars().all()
-
-    seen: dict[str, IotProcessLog] = {}
-    for r in rows:
-        bid = r.blade_id or f"unknown_{r.id}"
-        if bid not in seen:
-            seen[bid] = r
-    return list(seen.values())
+    return list((await db.execute(stmt)).scalars().all())
 
 
 async def _count_alarms(
@@ -173,19 +168,20 @@ async def query_processing_statistics(
     device_name: str | None = None,
 ) -> dict:
     dev_ids = await _resolve_device_ids(db, product, allowed_ids)
+    # 把设备名解析为 device_id 并入 dev_ids，统一按 device_id 过滤（不再按 device_name 过滤）
+    dev_ids = await _device_ids_for_name(db, device_name, dev_ids)
     if dev_ids is not None and not dev_ids:
         return _empty_processing()
 
-    blades = await _fetch_deduped_blades(db, dev_ids, start_ms, end_ms, device_name)
+    blades = await _fetch_process_logs(db, dev_ids, start_ms, end_ms)
     total = len(blades)
     qualified = sum(1 for r in blades if _is_qualified(r))
     qual_rate = round(qualified / total, 4) if total else None
     avg_after = _avg([r.after_flatness for r in blades])
     avg_total = _avg([r.total_duration for r in blades])  # 单位：分钟
 
-    # 报警统计：与加工日志同一时间/设备范围，仅非空内容
-    alarm_dev_ids = await _device_ids_for_name(db, device_name, dev_ids)
-    alarm_count = await _count_alarms(db, alarm_dev_ids, start_ms, end_ms, count_nonempty=True)
+    # 报警统计：与加工日志同一时间/设备范围，仅非空内容（dev_ids 已含设备名解析结果）
+    alarm_count = await _count_alarms(db, dev_ids, start_ms, end_ms, count_nonempty=True)
 
     return {
         "total_blades": total,
@@ -276,10 +272,12 @@ async def query_model_statistics(
     device_name: str | None = None,
 ) -> list[dict]:
     dev_ids = await _resolve_device_ids(db, product, allowed_ids)
+    # 把设备名解析为 device_id 并入 dev_ids，统一按 device_id 过滤（不再按 device_name 过滤）
+    dev_ids = await _device_ids_for_name(db, device_name, dev_ids)
     if dev_ids is not None and not dev_ids:
         return []
 
-    blades = await _fetch_deduped_blades(db, dev_ids, start_ms, end_ms, device_name)
+    blades = await _fetch_process_logs(db, dev_ids, start_ms, end_ms)
     groups: dict[str, dict] = {}
     for r in blades:
         bid = (r.blade_id or "").strip()

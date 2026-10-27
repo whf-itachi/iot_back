@@ -1,13 +1,48 @@
 """设备管理服务 — 重构版：sys_user 合并了 extension + tenant"""
 import uuid
 import datetime
-from sqlalchemy import select, delete, distinct
+from sqlalchemy import select, delete, distinct, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.device import IotDevice
 from ..models.device_user import IotDeviceUser
 from ..models.iot_event import IotProcessLog, IotFlatnessData
 from ..models.user import SysUser
 from ..services.jetlinks_service import jetlinks
+
+
+# ==================== 设备标识解析 ====================
+
+
+async def resolve_device_ids(
+    db: AsyncSession,
+    device_name: str | None = None,
+    device_names: list[str] | None = None,
+    product: str | None = None,
+) -> set[str] | None:
+    """将可选的「设备名称 / 设备名称列表 / 产品」过滤条件解析为具体的 device_id 集合。
+
+    - 三个参数均未提供 → 返回 None（表示「不按设备显式过滤」）。
+    - 任一参数提供但未匹配到设备 → 返回空集 set()（表示「过滤后无设备」）。
+
+    说明：产品（product）只是设备的描述属性，这里统一解析成设备集合，
+    调用方后续用 device_id 做查询过滤，避免在数据表上按 device_name 过滤。
+    """
+    if not device_name and not device_names and not product:
+        return None
+
+    conds = []
+    if device_name:
+        conds.append(IotDevice.name == device_name)
+    if device_names:
+        conds.append(IotDevice.name.in_(device_names))
+    if product:
+        conds.append(func.lower(IotDevice.product_name) == product.strip().lower())
+
+    stmt = select(IotDevice.id)
+    if conds:
+        stmt = stmt.where(and_(*conds))
+    res = await db.execute(stmt)
+    return {row[0] for row in res.all()}
 
 
 # ==================== 租户上下文 ====================

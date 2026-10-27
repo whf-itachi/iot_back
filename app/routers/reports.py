@@ -48,7 +48,6 @@ def _filter_label(product: str, device_name: str) -> str:
 # ==================== 加工统计报表 ====================
 
 @router.get("/iot/reports/processing")
-@router.get("/agg/reports/processing")
 async def reports_processing(
     startTime: str = Query("", alias="startTime"),
     endTime: str = Query("", alias="endTime"),
@@ -99,7 +98,6 @@ async def reports_processing_excel(
 # ==================== 设备 OEE 报告 ====================
 
 @router.get("/iot/reports/oee")
-@router.get("/agg/reports/oee")
 async def reports_oee(
     startTime: str = Query("", alias="startTime"),
     endTime: str = Query("", alias="endTime"),
@@ -150,7 +148,6 @@ async def reports_oee_excel(
 # ==================== 型号统计报表 ====================
 
 @router.get("/iot/reports/model")
-@router.get("/agg/reports/model")
 async def reports_model(
     startTime: str = Query("", alias="startTime"),
     endTime: str = Query("", alias="endTime"),
@@ -201,7 +198,6 @@ async def reports_model_excel(
 # ==================== 报警频次 Top10 ====================
 
 @router.get("/iot/reports/alarm-top")
-@router.get("/agg/reports/alarm-top")
 async def reports_alarm_top(
     startTime: str = Query("", alias="startTime"),
     endTime: str = Query("", alias="endTime"),
@@ -254,7 +250,6 @@ async def reports_alarm_top_excel(
 # ==================== 四合一汇总（单文件包含全部报表） ====================
 
 @router.get("/iot/reports/all/excel")
-@router.get("/agg/reports/all/excel")
 async def reports_all_excel(
     startTime: str = Query("", alias="startTime"),
     endTime: str = Query("", alias="endTime"),

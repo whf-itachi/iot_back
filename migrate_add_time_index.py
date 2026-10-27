@@ -1,4 +1,4 @@
-"""迁移脚本：为 iot_process_log / iot_flatness_data 的 event_time 补充时间索引。
+"""迁移脚本：为 iot_process_log / iot_flatness_data 补充时间索引与 (device_id, event_time) 复合索引。
 
 背景：
   两表是平台的"大表"，几乎所有统计 / 列表 / 报表查询都按 event_time 倒序或按时间范围过滤，
@@ -7,6 +7,12 @@
 
   同时为"按设备维度的时间查询"补充复合索引 (device_id, event_time)，其前缀 device_id
   也能覆盖单纯的按设备过滤 / 排序场景。
+
+  注：早期曾为 iot_process_log 补充过覆盖"窗口函数去重"（每 blade_id 取 event_time 最新一条）
+  的复合索引 (device_id, blade_id, event_time)。经核查，写入侧对 (device_id, blade_id) 已做
+  upsert（最新一条覆盖），存储层每个 (device, blade) 恒为 1 行，读取时不再需要按 blade_id 去重，
+  该窗口去重查询已被回退，此索引随之成为死索引。模型已移除该 Index()，存量环境需用
+  migrate_drop_process_blade_index.py 显式 DROP，此处不再创建。
 
   本项目在 app/main.py 启动时用 Base.metadata.create_all 建表，而 create_all 只能创建
   "不存在的表"，不会给已存在的表补索引。因此：
@@ -62,7 +68,7 @@ async def add_index(db, table: str, index: str, cols: str):
 async def main():
     apply = "--apply" in sys.argv
     print("=" * 60)
-    print("为 iot_process_log / iot_flatness_data 补时间索引")
+    print("为 iot_process_log / iot_flatness_data 补充时间索引与 (device_id, event_time) 复合索引")
     print("=" * 60)
     print(f"模式: {'执行 (--apply)' if apply else '预检（仅检查，不改数据库）'}")
     print("-" * 60)

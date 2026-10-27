@@ -1,5 +1,6 @@
 """Webhook 路由 — 接收 JetLinks 平台推送的事件数据"""
 import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
@@ -300,6 +301,15 @@ async def list_alarms(
 ):
     """查询已存储的告警记录（按报警时间倒序，支持按设备 + 时间范围过滤；仅返回当前用户所属设备的告警"""
     try:
+        # 防御性默认：未传时间范围时默认近一年，避免无边界全表扫描
+        now_ms = int(datetime.now().timestamp() * 1000)
+        one_year_ago_ms = int(
+            datetime(datetime.now().year - 1, datetime.now().month, datetime.now().day).timestamp() * 1000
+        )
+        if start_time is None:
+            start_time = one_year_ago_ms
+        if end_time is None:
+            end_time = now_ms
         allowed = set(await get_my_device_ids(db, current_user.get("username", "")))
         rows = await webhook_service.query_alarms(
             db, device_id=device_id, start_time=start_time, end_time=end_time, limit=limit,

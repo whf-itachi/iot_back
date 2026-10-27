@@ -27,7 +27,7 @@ class IotProcessLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="设备ID")
     device_name: Mapped[str | None] = mapped_column(String(200), comment="设备名称")
-    event_time: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="事件时间戳(毫秒)")
+    event_time: Mapped[int | None] = mapped_column(BigInteger, comment="事件时间戳(毫秒)")
 
     # 加工日志业务字段
     blade_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True, comment="叶片编号")
@@ -77,7 +77,7 @@ class IotFlatnessData(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="设备ID")
     device_name: Mapped[str | None] = mapped_column(String(200), comment="设备名称")
-    event_time: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="事件时间戳(毫秒)")
+    event_time: Mapped[int | None] = mapped_column(BigInteger, comment="事件时间戳(毫秒)")
 
     # 平面度测量业务字段
     measure_time: Mapped[int | None] = mapped_column(BigInteger, comment="测量时间")
