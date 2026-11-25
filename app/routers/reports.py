@@ -36,6 +36,15 @@ def _range_label(start_ms, end_ms) -> str:
     return f"{_ts_str(start_ms)} ~ {_ts_str(end_ms)}"
 
 
+def _parse_optional_float(v: str | None) -> float | None:
+    """OEE 可调参数：空串/非数字/<=0 视为未提供，走后端默认值。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 def _filter_label(product: str, device_name: str) -> str:
     parts = []
     if product:
@@ -103,6 +112,8 @@ async def reports_oee(
     endTime: str = Query("", alias="endTime"),
     product: str = Query("", alias="product"),
     deviceName: str = Query("", alias="deviceName"),
+    plannedHours: str = Query("", alias="plannedHours"),
+    idealCycle: str = Query("", alias="idealCycle"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -110,7 +121,8 @@ async def reports_oee(
         allowed = await _get_allowed_device_ids(db, current_user)
         start_ms, end_ms = _parse_time_range(startTime, endTime)
         data = await report_service.query_oee_statistics(
-            db, allowed, start_ms, end_ms, product or None, deviceName or None
+            db, allowed, start_ms, end_ms, product or None, deviceName or None,
+            _parse_optional_float(plannedHours), _parse_optional_float(idealCycle),
         )
         return {"success": True, **data}
     except Exception as e:
@@ -123,6 +135,8 @@ async def reports_oee_excel(
     endTime: str = Query("", alias="endTime"),
     product: str = Query("", alias="product"),
     deviceName: str = Query("", alias="deviceName"),
+    plannedHours: str = Query("", alias="plannedHours"),
+    idealCycle: str = Query("", alias="idealCycle"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -130,7 +144,8 @@ async def reports_oee_excel(
         allowed = await _get_allowed_device_ids(db, current_user)
         start_ms, end_ms = _parse_time_range(startTime, endTime)
         data = await report_service.query_oee_statistics(
-            db, allowed, start_ms, end_ms, product or None, deviceName or None
+            db, allowed, start_ms, end_ms, product or None, deviceName or None,
+            _parse_optional_float(plannedHours), _parse_optional_float(idealCycle),
         )
         excel_data = build_oee_report_excel(
             data, _range_label(start_ms, end_ms), _filter_label(product, deviceName)
@@ -256,6 +271,8 @@ async def reports_all_excel(
     product: str = Query("", alias="product"),
     deviceName: str = Query("", alias="deviceName"),
     top: int = Query(10, alias="top"),
+    plannedHours: str = Query("", alias="plannedHours"),
+    idealCycle: str = Query("", alias="idealCycle"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -267,7 +284,8 @@ async def reports_all_excel(
             db, allowed, start_ms, end_ms, product or None, deviceName or None
         )
         oee = await report_service.query_oee_statistics(
-            db, allowed, start_ms, end_ms, product or None, deviceName or None
+            db, allowed, start_ms, end_ms, product or None, deviceName or None,
+            _parse_optional_float(plannedHours), _parse_optional_float(idealCycle),
         )
         model_rows = await report_service.query_model_statistics(
             db, allowed, start_ms, end_ms, product or None, deviceName or None

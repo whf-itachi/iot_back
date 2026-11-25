@@ -356,7 +356,7 @@ def _write_processing_sheet(ws, data: dict, range_label: str, filter_label: str)
         ("报警次数", data.get("alarm_count", 0), "次"),
         ("平均加工后平面度", _num(data.get("avg_after_flatness"), 3), "mm"),
         ("平均总时长", _num(data.get("avg_total_duration"), 1), "Min"),
-        ("OEE（本期仅合格率）", _fmt_pct(data.get("qualification_rate")), "待补可用率/性能率"),
+        ("质量率（OEE 维度）", _fmt_pct(data.get("qualification_rate")), "完整 OEE 见「设备OEE报告」"),
     ])
     row += 1
     ws.merge_cells(f"A{row}:E{row}")
@@ -381,29 +381,46 @@ def build_processing_report_excel(data: dict, range_label: str, filter_label: st
     return buf.getvalue()
 
 
+def _oee_kv_rows(data: dict) -> list:
+    """OEE 总体指标行（单报表与四合一汇总复用）。"""
+    o = data.get("overall", {})
+    hours = data.get("planned_hours")
+    hours_txt = f"{hours:g}" if isinstance(hours, (int, float)) else "8"
+    cycle = data.get("ideal_cycle_minutes")
+    cycle_txt = f"{cycle:g}" if isinstance(cycle, (int, float)) else "-"
+    cycle_src = "客户输入" if data.get("ideal_cycle_source") == "custom" else "平均占用时长(默认)"
+    return [
+        ("可用率", _fmt_pct(o.get("availability")), f"加工占用总时长÷(有生产天数×{hours_txt}h)"),
+        ("性能率", _fmt_pct(o.get("performance")), f"理论节拍{cycle_txt}分钟({cycle_src})×片数÷加工占用总时长"),
+        ("合格率", _fmt_pct(o.get("qualification_rate")), "合格片数÷总片数(平面度≤0.5mm)"),
+        ("OEE", _fmt_pct(o.get("oee")), "可用率×性能率×合格率"),
+        ("总叶片数", o.get("total", 0), "片"),
+        ("合格数", o.get("qualified", 0), "片"),
+    ]
+
+
+def _oee_table_rows(data: dict) -> list:
+    """分设备 OEE 表格数据（单报表与四合一汇总复用）。"""
+    return [
+        [d["device_name"], d["total"], d["qualified"], _fmt_pct(d.get("availability")),
+         _fmt_pct(d.get("performance")), _fmt_pct(d.get("qualification_rate")), _fmt_pct(d.get("oee"))]
+        for d in data.get("per_device", [])
+    ]
+
+
 def build_oee_report_excel(data: dict, range_label: str, filter_label: str) -> bytes:
-    """设备 OEE 报告（可用率 × 性能率 × 合格率；本期仅合格率维度）。"""
+    """设备 OEE 报告（可用率 × 性能率 × 合格率）。"""
     wb, ws, row = _new_report_workbook(
         "设备OEE报告", f"统计区间：{range_label}    筛选：{filter_label}"
     )
-    o = data.get("overall", {})
-    row = _kv_block(ws, row, [
-        ("可用率", _fmt_null(o.get("availability")), "待采集"),
-        ("性能率", _fmt_null(o.get("performance")), "待采集"),
-        ("合格率", _fmt_pct(o.get("qualification_rate")), ""),
-        ("OEE", _fmt_null(o.get("oee")), "待采集（可用率×性能率×合格率）"),
-        ("总叶片数", o.get("total", 0), "片"),
-        ("合格数", o.get("qualified", 0), "片"),
-    ])
+    row = _kv_block(ws, row, _oee_kv_rows(data))
     row += 1
     ws.merge_cells(f"A{row}:E{row}")
-    _set_cell(ws, row, 1, "分设备OEE（本期仅合格率）", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
+    _set_cell(ws, row, 1, "分设备OEE", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
     row += 1
     row = _table_block(
         ws, row, ["设备", "叶片数", "合格数", "可用率", "性能率", "合格率", "OEE"],
-        [[d["device_name"], d["total"], d["qualified"], _fmt_null(d.get("availability")),
-          _fmt_null(d.get("performance")), _fmt_pct(d.get("qualification_rate")), _fmt_null(d.get("oee"))]
-         for d in data.get("per_device", [])],
+        _oee_table_rows(data),
     )
     buf = io.BytesIO()
     wb.save(buf)
@@ -450,24 +467,14 @@ def build_alarm_top_excel(data: dict, range_label: str, filter_label: str) -> by
 # ---- 四合一汇总（单文件包含全部报表） ----
 def _write_oee_sheet(ws, data: dict, range_label: str, filter_label: str) -> int:
     row = _report_sheet_header(ws, "设备OEE报告", f"统计区间：{range_label}    筛选：{filter_label}")
-    o = data.get("overall", {})
-    row = _kv_block(ws, row, [
-        ("可用率", _fmt_null(o.get("availability")), "待采集"),
-        ("性能率", _fmt_null(o.get("performance")), "待采集"),
-        ("合格率", _fmt_pct(o.get("qualification_rate")), ""),
-        ("OEE", _fmt_null(o.get("oee")), "待采集（可用率×性能率×合格率）"),
-        ("总叶片数", o.get("total", 0), "片"),
-        ("合格数", o.get("qualified", 0), "片"),
-    ])
+    row = _kv_block(ws, row, _oee_kv_rows(data))
     row += 1
     ws.merge_cells(f"A{row}:E{row}")
-    _set_cell(ws, row, 1, "分设备OEE（本期仅合格率）", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
+    _set_cell(ws, row, 1, "分设备OEE", _FONT_SECTION, _FILL_SECTION, _ALIGN_LEFT, _THIN_BORDER)
     row += 1
     row = _table_block(
         ws, row, ["设备", "叶片数", "合格数", "可用率", "性能率", "合格率", "OEE"],
-        [[d["device_name"], d["total"], d["qualified"], _fmt_null(d.get("availability")),
-          _fmt_null(d.get("performance")), _fmt_pct(d["qualification_rate"]), _fmt_null(d.get("oee"))]
-         for d in data.get("per_device", [])],
+        _oee_table_rows(data),
     )
     return row
 
