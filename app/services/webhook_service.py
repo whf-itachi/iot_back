@@ -1111,6 +1111,9 @@ async def query_device_alarms(
     allowed_ids: set[str] | None = None,
     device_name: str | None = None,
     blade_name: str | None = None,
+    alarm_keyword: str | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -1118,6 +1121,11 @@ async def query_device_alarms(
 
     查询条件：
       - device_name：设备名称模糊过滤（可选，留空表示全部所属设备）。
+      - alarm_keyword：告警内容关键词模糊过滤（可选，包含即命中，留空表示不按内容筛选）。
+          在 SQL 层与设备隔离条件一起过滤，保证 count 与分页数据口径一致；
+          autoescape=True 把用户输入中的 % / _ / 转义符当字面量，避免通配符误匹配。
+      - start_time / end_time：告警时间范围（毫秒时间戳，闭区间，均可选；留空表示不限制该侧）。
+          与叶片名筛选带来的加工时间区间叠加时取交集（AND）。
       - blade_name：叶片名称（叶片编号）精确匹配（可选）。
           若该条件提供，会先在候选设备的 iot_process_log 中核验叶片是否存在：
             - 不存在 → 返回 error（"该叶片未在加工记录中找到"），alarms 为空；
@@ -1185,12 +1193,20 @@ async def query_device_alarms(
     page_size = max(1, page_size)
     offset_val = (page - 1) * page_size
 
-    # 基础过滤条件（候选设备 + 可选叶片加工时间区间）
+    # 基础过滤条件（候选设备 + 时间范围 + 可选叶片加工时间区间 + 可选告警内容关键词）
     filter_conds = [IotAlarm.device_id.in_(candidate_ids)]
+    if start_time is not None:
+        filter_conds.append(IotAlarm.alarm_time >= start_time)
+    if end_time is not None:
+        filter_conds.append(IotAlarm.alarm_time <= end_time)
     if alarm_start is not None:
         filter_conds.append(IotAlarm.alarm_time >= alarm_start)
     if alarm_end is not None:
         filter_conds.append(IotAlarm.alarm_time <= alarm_end)
+    if alarm_keyword and alarm_keyword.strip():
+        filter_conds.append(
+            IotAlarm.alarm_content.contains(alarm_keyword.strip(), autoescape=True)
+        )
 
     # 总数（用于分页）
     count_stmt = select(func.count(IotAlarm.id)).where(and_(*filter_conds))

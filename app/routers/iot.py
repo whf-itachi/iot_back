@@ -99,6 +99,23 @@ def _parse_time_range(start_str: str, end_str: str) -> tuple[int, int]:
     return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
 
 
+def _parse_optional_time_range(start_str: str, end_str: str) -> tuple[int | None, int | None]:
+    """日期字符串(YYYY-MM-DD) → 毫秒时间戳，空串表示不限制该侧。
+
+    与 _parse_time_range 的区别：这里不做"一年前/现在"的防御性默认，
+    因为告警查询明确允许留空表示查全部历史；开始取当天 00:00:00.000，
+    结束取当天 23:59:59.999（闭区间含当天）。
+    """
+    start_ms = None
+    end_ms = None
+    if start_str:
+        start_ms = int(datetime.strptime(start_str[:10], "%Y-%m-%d").timestamp() * 1000)
+    if end_str:
+        end_dt = datetime.strptime(end_str[:10], "%Y-%m-%d") + timedelta(days=1) - timedelta(milliseconds=1)
+        end_ms = int(end_dt.timestamp() * 1000)
+    return start_ms, end_ms
+
+
 # ==================== Process logs ====================
 
 @router.get("/iot/process-log/blades")
@@ -283,6 +300,9 @@ async def device_detail_statistics(
 async def device_alarms(
     device_name: str = Query("", description="设备名称模糊查询，留空表示全部所属设备"),
     blade_name: str = Query("", description="叶片名称（叶片编号）精确匹配，留空表示不按叶片筛选"),
+    alarm_keyword: str = Query("", description="告警内容关键词模糊查询，包含即命中，留空表示不按内容筛选"),
+    start_date: str = Query("", description="告警开始日期 YYYY-MM-DD，留空表示不限开始（含全部历史）"),
+    end_date: str = Query("", description="告警结束日期 YYYY-MM-DD，留空表示不限结束，传入时含当天"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(20, ge=1, le=200, description="每页条数"),
     db: AsyncSession = Depends(get_db),
@@ -290,18 +310,23 @@ async def device_alarms(
 ):
     """告警信息查询 — 仅返回当前用户可访问设备的告警，支持分页。
 
-    联合设备表返回设备名；支持按设备名、叶片名称筛选。
+    联合设备表返回设备名；支持按设备名、告警内容关键词、叶片名称、告警日期范围筛选。
+    日期留空表示不限制该侧（可查全部历史）；若同时按叶片名筛选，两个时间条件取交集。
     若按叶片名称筛选，会先核验该叶片是否在候选设备的加工记录中：
     不在则通过 error 字段提示；在则按该叶片加工时间段(process_start~process_end)筛选告警，
     并在 blade_range 中回显叶片加工时间范围。
     """
     try:
         allowed = await _get_allowed_device_ids(db, current_user)
+        start_ms, end_ms = _parse_optional_time_range(start_date, end_date)
         data = await webhook_service.query_device_alarms(
             db,
             allowed_ids=allowed,
             device_name=device_name or None,
             blade_name=blade_name or None,
+            alarm_keyword=alarm_keyword or None,
+            start_time=start_ms,
+            end_time=end_ms,
             page=page,
             page_size=page_size,
         )
